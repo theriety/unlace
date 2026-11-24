@@ -1,0 +1,466 @@
+//! `unlace diff`: a narrated move list between two structures.
+//!
+//! Each reference is `current` or `mode/index` (e.g. `anchored/1`). A diff
+//! against `current` is the candidate's stored delta narration — the grouped
+//! move list the engine already computed versus the current tree. A diff between
+//! two candidates of one mode also reports their variation-of-information
+//! distance from the result's pairwise matrix.
+
+use std::io::Write;
+use std::path::PathBuf;
+
+use unlace_engine::{AnalyzeResult, UnlaceError};
+
+use crate::commands::{candidate_at, mode_result, read_result};
+use crate::render::{ADVICE_DISCLAIMER, render_diff, render_moves};
+
+/// The parsed inputs of a `diff` run.
+#[derive(Debug)]
+pub struct DiffArgs {
+    /// The saved `AnalyzeResult` JSON to read.
+    pub input: PathBuf,
+    /// The first structure reference (`current` or `mode/index`).
+    pub left: String,
+    /// The second structure reference (`current` or `mode/index`).
+    pub right: String,
+}
+
+/// A parsed structure reference: the current layout, or a candidate.
+#[derive(Debug, PartialEq, Eq)]
+enum Reference {
+    /// The current (as-is) layout.
+    Current,
+    /// A 1-based candidate within a mode.
+    Candidate {
+        /// The mode name.
+        mode: String,
+        /// The 1-based candidate index.
+        index: usize,
+    },
+}
+
+/// Parses a `current` or `mode/index` reference.
+///
+/// # Errors
+///
+/// Returns [`UnlaceError::CandidateNotFound`] when the reference is malformed.
+fn parse_reference(text: &str) -> Result<Reference, UnlaceError> {
+    if text == "current" {
+        return Ok(Reference::Current);
+    }
+    let (mode, index) = text.split_once('/').ok_or_else(|| not_found(text, 0))?;
+    if !matches!(mode, "anchored" | "greenfield") {
+        return Err(not_found(text, 0));
+    }
+    let index = index.parse::<usize>().map_err(|_| not_found(text, 0))?;
+    Ok(Reference::Candidate {
+        mode: mode.to_owned(),
+        index,
+    })
+}
+
+/// Builds a `CandidateNotFound` for a malformed reference.
+fn not_found(text: &str, index: usize) -> UnlaceError {
+    UnlaceError::CandidateNotFound {
+        mode: text.to_owned(),
+        index,
+    }
+}
+
+/// Runs `diff`, writing the narrated move list (and any VI distance) to `out`.
+///
+/// # Errors
+///
+/// Returns [`UnlaceError::InputUnreadable`] when the input cannot be read and
+/// [`UnlaceError::CandidateNotFound`] when a reference does not resolve.
+pub fn run(args: &DiffArgs, out: &mut impl Write) -> Result<(), UnlaceError> {
+    let result = read_result(&args.input)?;
+    let left = parse_reference(&args.left)?;
+    let right = parse_reference(&args.right)?;
+
+    match (&left, &right) {
+        (Reference::Current, Reference::Candidate { mode, index })
+        | (Reference::Candidate { mode, index }, Reference::Current) => {
+            let candidate = candidate_at(&result, mode, *index)?;
+            render_diff(candidate, out).map_err(|error| write_error(&error))
+        }
+        (
+            Reference::Candidate {
+                mode: left_mode,
+                index: left_index,
+            },
+            Reference::Candidate {
+                mode: right_mode,
+                index: right_index,
+            },
+        ) => {
+            // a candidate-vs-candidate diff narrates the right candidate's moves
+            // against the current tree and reports the pair's VI distance when both
+            // belong to the same mode (the only pairing the matrix covers). the
+            // left reference is resolved too, so an out-of-range left ref fails
+            // with CANDIDATE_NOT_FOUND instead of silently rendering.
+            candidate_at(&result, left_mode, *left_index)?;
+            let right_candidate = candidate_at(&result, right_mode, *right_index)?;
+            render_moves(right_candidate, out).map_err(|error| write_error(&error))?;
+            if left_mode == right_mode {
+                write_distance(&result, left_mode, *left_index, *right_index, out)?;
+            }
+            writeln!(out, "{ADVICE_DISCLAIMER}").map_err(|error| write_error(&error))
+        }
+        (Reference::Current, Reference::Current) => {
+            writeln!(out, "no moves\n{ADVICE_DISCLAIMER}").map_err(|error| write_error(&error))
+        }
+    }
+}
+
+/// Writes the variation-of-information distance between two same-mode candidates.
+fn write_distance(
+    result: &AnalyzeResult,
+    mode: &str,
+    left_index: usize,
+    right_index: usize,
+    out: &mut impl Write,
+) -> Result<(), UnlaceError> {
+    // the caller already resolved a candidate of `mode`, so the mode is present.
+    let distance = mode_result(result, mode)
+        .ok()
+        .and_then(|mode_result| {
+            mode_result
+                .pairwise_distance
+                .get(left_index.wrapping_sub(1))
+        })
+        .and_then(|row| row.get(right_index.wrapping_sub(1)))
+        .copied();
+    if let Some(distance) = distance {
+        writeln!(out, "vi distance {distance:.4}").map_err(|error| write_error(&error))?;
+    }
+    Ok(())
+}
+
+/// Wraps a rendering I/O failure into a [`UnlaceError`].
+fn write_error(error: &std::io::Error) -> UnlaceError {
+    UnlaceError::InputUnreadable {
+        path: PathBuf::from("<stdout>"),
+        reason: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use unlace_engine::{
+        Candidate, ContainerNode, CurrentStanding, CurrentTree, FileMove, Level, ModeResult, Modes,
+        Move, MoveKind, MoveReason, ProfileConfig, ProfileCurrent, ScoreBreakdown, Summary,
+        SymbolPlacement,
+    };
+
+    use super::*;
+
+    /// Builds a result with two anchored candidates.
+    fn sample() -> AnalyzeResult {
+        AnalyzeResult {
+            schema_version: unlace_engine::RESULT_SCHEMA_VERSION,
+            tests: unlace_engine::TestSettings::default(),
+            snapshot_hash: "h".to_owned(),
+            summary: Summary {
+                symbols: 1,
+                edges: 0,
+                files: 1,
+                files_by_language: BTreeMap::new(),
+            },
+            current: CurrentTree {
+                tree: file("lib"),
+                shared_findings: Vec::new(),
+            },
+            advice: unlace_engine::Advice::default(),
+            profiles: Modes {
+                anchored: Some(ModeResult {
+                    parameters: ProfileConfig::default(),
+                    current: ProfileCurrent {
+                        score: 1.0,
+                        score_breakdown: zero(),
+                        unique_findings: Vec::new(),
+                        standing: CurrentStanding::Outscored,
+                        capacity_breaks: 0,
+                    },
+                    candidates: vec![candidate(1), candidate(2)],
+                    pairwise_distance: vec![vec![0.0, 0.7], vec![0.7, 0.0]],
+                    solution_space_converged: true,
+                }),
+                greenfield: None,
+            },
+        }
+    }
+
+    /// Builds a candidate carrying a single narrated move.
+    fn candidate(index: u32) -> Candidate {
+        Candidate {
+            index,
+            score: f64::from(index),
+            score_breakdown: zero(),
+            improvement: 0.0,
+            tree: file("lib"),
+            conditional_splits: Vec::new(),
+            delta_narration: vec![Move {
+                kind: MoveKind::Move,
+                files: vec![FileMove {
+                    path: "sym".to_owned(),
+                    from: "old".to_owned(),
+                }],
+                to: "new".to_owned(),
+                reason: MoveReason::Clustering,
+                mirrors: Vec::new(),
+            }],
+            symbol_moves: Vec::new(),
+            capacity_remainder: None,
+        }
+    }
+
+    /// Builds a file node.
+    fn file(name: &str) -> ContainerNode {
+        ContainerNode {
+            name: name.to_owned(),
+            level: Level::File,
+            children: None,
+            symbols: Some(vec![SymbolPlacement {
+                display: None,
+                name: "sym".to_owned(),
+                visibility: Level::File,
+            }]),
+            production_sloc: Some(1),
+        }
+    }
+
+    /// Builds a zeroed breakdown.
+    fn zero() -> ScoreBreakdown {
+        ScoreBreakdown {
+            cut: 0.0,
+            imbalance: 0.0,
+            naming: 0.0,
+            path: 0.0,
+            anchor: 0.0,
+            dependency_only: 0.0,
+            companion_separation: 0.0,
+            capacity: 0.0,
+        }
+    }
+
+    /// Writes `result` to a temp file and returns the path.
+    fn saved(result: &AnalyzeResult) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("unlace-diff-{}-{unique}.json", nanos()));
+        let _ = std::fs::write(&path, serde_json::to_vec(result).unwrap_or_default());
+        path
+    }
+
+    /// Returns a unique nanosecond stamp.
+    fn nanos() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn should_parse_a_current_reference() {
+        assert_eq!(parse_reference("current").ok(), Some(Reference::Current));
+    }
+
+    #[test]
+    fn should_parse_a_mode_index_reference() {
+        assert_eq!(
+            parse_reference("anchored/2").ok(),
+            Some(Reference::Candidate {
+                mode: "anchored".to_owned(),
+                index: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn should_reject_an_unknown_mode_reference() {
+        assert!(matches!(
+            parse_reference("bogus/1"),
+            Err(UnlaceError::CandidateNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn should_narrate_current_against_a_candidate() {
+        let input = saved(&sample());
+        let args = DiffArgs {
+            input: input.clone(),
+            left: "current".to_owned(),
+            right: "anchored/1".to_owned(),
+        };
+        let mut buffer = Vec::new();
+
+        let outcome = run(&args, &mut buffer);
+
+        let _ = std::fs::remove_file(&input);
+        assert!(outcome.is_ok());
+        assert!(String::from_utf8_lossy(&buffer).contains("[old → new]"));
+    }
+
+    #[test]
+    fn should_report_vi_distance_for_two_same_mode_candidates() {
+        let input = saved(&sample());
+        let args = DiffArgs {
+            input: input.clone(),
+            left: "anchored/1".to_owned(),
+            right: "anchored/2".to_owned(),
+        };
+        let mut buffer = Vec::new();
+
+        let outcome = run(&args, &mut buffer);
+
+        let _ = std::fs::remove_file(&input);
+        assert!(outcome.is_ok());
+        assert!(String::from_utf8_lossy(&buffer).contains("vi distance 0.7000"));
+    }
+
+    /// Runs `diff left right` over `result` into a fresh buffer.
+    fn diff(result: &AnalyzeResult, left: &str, right: &str) -> (Result<(), UnlaceError>, String) {
+        let input = saved(result);
+        let args = DiffArgs {
+            input: input.clone(),
+            left: left.to_owned(),
+            right: right.to_owned(),
+        };
+        let mut buffer = Vec::new();
+        let outcome = run(&args, &mut buffer);
+        let _ = std::fs::remove_file(&input);
+        (outcome, String::from_utf8_lossy(&buffer).into_owned())
+    }
+
+    #[test]
+    fn should_reject_a_reference_without_a_numeric_index_naming_it_whole() {
+        for text in ["anchored", "anchored/first"] {
+            assert!(
+                matches!(
+                    parse_reference(text),
+                    Err(UnlaceError::CandidateNotFound { ref mode, index: 0 }) if mode == text
+                ),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_narrate_the_same_moves_whichever_side_names_current() {
+        let result = sample();
+
+        let (forward, forward_text) = diff(&result, "current", "anchored/1");
+        let (backward, backward_text) = diff(&result, "anchored/1", "current");
+
+        assert!(forward.is_ok() && backward.is_ok());
+        assert_eq!(forward_text, backward_text);
+    }
+
+    #[test]
+    fn should_omit_the_vi_distance_across_modes_or_outside_the_matrix() {
+        let mut result = sample();
+        result.profiles.greenfield = result.profiles.anchored.clone();
+        if let Some(greenfield) = result.profiles.greenfield.as_mut() {
+            greenfield.pairwise_distance.clear();
+        }
+
+        for (left, right) in [
+            ("anchored/1", "greenfield/2"),
+            ("greenfield/1", "greenfield/2"),
+        ] {
+            let (outcome, text) = diff(&result, left, right);
+
+            assert!(outcome.is_ok(), "{left} {right}");
+            assert!(text.contains("1. sym [old → new]"), "{text}");
+            assert!(!text.contains("vi distance"), "{left} {right}: {text}");
+            assert!(text.ends_with(&format!("{ADVICE_DISCLAIMER}\n")), "{text}");
+        }
+    }
+
+    #[test]
+    fn should_fail_when_the_left_candidate_is_out_of_range() {
+        let (outcome, text) = diff(&sample(), "anchored/9", "anchored/1");
+
+        assert!(matches!(
+            outcome,
+            Err(UnlaceError::CandidateNotFound { ref mode, index: 9 }) if mode == "anchored"
+        ));
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn should_fail_without_output_when_the_input_or_either_reference_does_not_resolve() {
+        let absent = std::env::temp_dir().join(format!("unlace-diff-absent-{}.json", nanos()));
+        let args = DiffArgs {
+            input: absent.clone(),
+            left: "current".to_owned(),
+            right: "current".to_owned(),
+        };
+        let mut buffer = Vec::new();
+
+        let unreadable = run(&args, &mut buffer);
+
+        assert!(matches!(
+            unreadable,
+            Err(UnlaceError::InputUnreadable { ref path, .. }) if *path == absent
+        ));
+        assert!(buffer.is_empty());
+        for (left, right, mode, index) in [
+            ("bogus", "current", "bogus", 0),
+            ("current", "bogus", "bogus", 0),
+            ("current", "greenfield/1", "greenfield", 0),
+            ("anchored/1", "anchored/9", "anchored", 9),
+        ] {
+            let (outcome, text) = diff(&sample(), left, right);
+
+            assert!(
+                matches!(
+                    outcome,
+                    Err(UnlaceError::CandidateNotFound { mode: ref named, index: found })
+                        if named == mode && found == index
+                ),
+                "{left} {right}"
+            );
+            assert_eq!(text, "", "{left} {right}");
+        }
+    }
+
+    #[test]
+    fn should_surface_a_failed_write_at_every_call_of_each_diff_shape() {
+        let input = saved(&sample());
+
+        for (left, right) in [
+            ("current", "current"),
+            ("current", "anchored/1"),
+            ("anchored/1", "anchored/2"),
+        ] {
+            let args = DiffArgs {
+                input: input.clone(),
+                left: left.to_owned(),
+                right: right.to_owned(),
+            };
+            let mut full = Vec::new();
+            let complete = run(&args, &mut full);
+            let swallowed = crate::render::swallowed_write_faults(&full, |sink| run(&args, sink));
+
+            assert!(complete.is_ok(), "{left} {right}");
+            assert_eq!(swallowed, 0, "{left} {right}");
+        }
+        let mut closed: &mut [u8] = &mut [];
+        let args = DiffArgs {
+            input: input.clone(),
+            left: "current".to_owned(),
+            right: "current".to_owned(),
+        };
+        let failure = run(&args, &mut closed);
+
+        let _ = std::fs::remove_file(&input);
+        assert!(matches!(
+            failure,
+            Err(UnlaceError::InputUnreadable { ref path, .. }) if path.as_os_str() == "<stdout>"
+        ));
+    }
+}

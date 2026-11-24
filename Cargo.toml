@@ -4,6 +4,7 @@ members = [
     "crates/ir",
     "crates/core",
     "crates/engine",
+    "crates/cli",
     "crates/adapter-typescript",
     "crates/adapter-rust",
     "crates/adapter-python",

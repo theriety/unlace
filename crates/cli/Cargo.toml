@@ -1,0 +1,21 @@
+[package]
+name = "unlace-cli"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+
+[[bin]]
+name = "unlace"
+path = "src/main.rs"
+
+[dependencies]
+unlace-engine = { path = "../engine" }
+clap = { version = "4", features = ["derive"] }
+serde_json = { workspace = true }
+unicode-width = "0.2"
+
+[dev-dependencies]
+assert_cmd = "2"
+
+[lints]
+workspace = true

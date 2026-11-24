@@ -1,0 +1,3066 @@
+//! Sink-independent rendering of an [`AnalyzeResult`] into human-readable text.
+//!
+//! Rendering is a pure function of the result and an output sink: the same result
+//! always renders the same bytes, and `--format json` bypasses this module
+//! entirely (the JSON path serializes the library value verbatim, the AD-5
+//! parity guarantee). Terminal and Markdown share deterministic report content:
+//! project metadata, structural findings, candidate layouts, and qualified advice.
+//! Candidates include exact actions and paired affected-branch trees. Human text
+//! uses no terminal escapes and wraps losslessly within 100 display columns.
+
+mod advice;
+mod changes;
+mod diff;
+mod findings;
+mod limit;
+mod report;
+mod tree;
+
+use std::io::{self, Write};
+
+use unlace_engine::{AnalyzeResult, ModeResult, ProfileConfig, ScoreBreakdown, TestSettings};
+
+/// The one honesty line every human-readable output carries: unlace proposes,
+/// it does not guarantee. JSON output is a data contract and omits it.
+pub const ADVICE_DISCLAIMER: &str = "All findings and moves are suggestions. Applying them may break the build; use your own judgement.";
+
+pub use diff::{render_diff, render_moves};
+pub use findings::write_violation_table;
+pub use tree::render_tree;
+
+#[cfg(test)]
+use advice::caption_for;
+#[cfg(test)]
+use diff::symbol_move_line;
+#[cfg(test)]
+use findings::cycle_finding_text;
+
+/// The output format the `analyze` command renders in.
+///
+/// `Summary` is the human-readable printed-report face; `Json` is the serialized
+/// library result, the AD-5 parity face. The `violations` command carries its
+/// own table face so the two surfaces never share a variant they do not both
+/// use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// The default human-readable printed report.
+    Summary,
+    /// The serialized `AnalyzeResult` JSON.
+    Json,
+}
+
+impl Format {
+    /// Resolves the effective format from an optional explicit choice.
+    ///
+    /// An explicit choice wins; otherwise every sink uses `default_human`.
+    /// The terminal argument is retained for API compatibility and is ignored.
+    #[must_use]
+    pub(super) fn resolve(
+        explicit: Option<Format>,
+        _is_terminal: bool,
+        default_human: Format,
+    ) -> Format {
+        explicit.unwrap_or(default_human)
+    }
+}
+
+/// Human-readable report detail. JSON serialization ignores these options.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RenderOptions {
+    /// Includes numerical evidence, score components, and effective parameters.
+    pub verbose: bool,
+    /// Shows every list item instead of the first few of each list.
+    pub full: bool,
+}
+
+/// Renders the analysis `result` in `format` to `out` with explicit detail options.
+///
+/// The JSON face is the parity-pinned serialization of the library result; the
+/// summary face presents findings, candidate layouts, and qualified advice.
+/// `project` names the saved analyzed repository and banners the report.
+///
+/// # Errors
+/// Returns the output sink's I/O error.
+pub fn render_with_options(
+    result: &AnalyzeResult,
+    format: Format,
+    project: &str,
+    options: RenderOptions,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    match format {
+        Format::Json => write_json(result, out),
+        Format::Summary => report::Report::build(result, project, options).write_text(out),
+    }
+}
+
+/// Renders the same report content as Markdown, using the saved project name.
+pub(crate) fn markdown(result: &AnalyzeResult, options: RenderOptions) -> String {
+    report::Report::build(result, &result.current.tree.name, options).markdown()
+}
+
+/// Serializes `result` as pretty JSON to `out`.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] if serialization or writing fails.
+pub fn write_json(result: &AnalyzeResult, out: &mut impl Write) -> io::Result<()> {
+    serde_json::to_vec(result)
+        .map_err(io::Error::other)
+        .and_then(|json| {
+            out.write_all(&json)?;
+            out.write_all(b"\n")
+        })
+}
+
+/// Formats a score figure with four decimals.
+fn f4(value: f64) -> String {
+    format!("{value:.4}")
+}
+
+/// Formats a signed figure with four decimals and an explicit sign.
+fn sf(value: f64) -> String {
+    if value >= 0.0 {
+        format!("+{value:.4}")
+    } else {
+        format!("-{:.4}", value.abs())
+    }
+}
+
+/// Describes a candidate's score change without calling a regression a gain.
+fn improvement_summary(improvement: f64) -> String {
+    if improvement > 0.0 {
+        format!("gain {}", sf(improvement))
+    } else if improvement < 0.0 {
+        format!("regression {}", f4(improvement.abs()))
+    } else {
+        "no improvement".to_owned()
+    }
+}
+
+/// Formats a pull weight: at least one decimal, trailing zeros trimmed.
+fn weight(value: f64) -> String {
+    let mut text = format!("{value:.4}");
+    while text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.push('0');
+    }
+    text
+}
+
+/// Quotes a file, folder, or symbol name in backticks — every name token in
+/// prose, titles, captions, and table cells carries them.
+fn nq(name: &str) -> String {
+    format!("`{name}`")
+}
+
+/// Wraps `text` on spaces to a 99-column budget.
+///
+/// `first_pad` indents the first line, `cont_pad` every continuation; both are
+/// counted against the budget, mirroring the approved artifact's geometry.
+/// Whitespace is trimmed at every line end, so joining the lines with one
+/// space restores the text and no rendered line carries trailing whitespace.
+fn wrap(text: &str, first_pad: usize, cont_pad: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut indent = " ".repeat(first_pad);
+    for word in text.split_inclusive(char::is_whitespace) {
+        let grown = cur.chars().count() + word.chars().count();
+        if !cur.is_empty() && indent.chars().count() + grown > 99 {
+            lines.push(format!("{indent}{}", cur.trim_end()));
+            word.clone_into(&mut cur);
+            indent = " ".repeat(cont_pad);
+        } else {
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(format!("{indent}{}", cur.trim_end()));
+    }
+    lines
+}
+
+/// The modes present in `result`, in their fixed report order.
+fn present_modes(result: &AnalyzeResult) -> Vec<(&'static str, &ModeResult)> {
+    let mut modes = Vec::new();
+    if let Some(mode) = &result.profiles.anchored {
+        modes.push(("anchored", mode));
+    }
+    if let Some(mode) = &result.profiles.greenfield {
+        modes.push(("greenfield", mode));
+    }
+    modes
+}
+
+/// Renders the effective `[tests]` section, which every profile shares.
+pub(crate) fn effective_tests_line(tests: &TestSettings) -> String {
+    format!(
+        "   tests     helper-cap {} · patterns {} · builtins {}",
+        tests.helper_cap,
+        tests.patterns.len(),
+        tests.builtins
+    )
+}
+
+/// Renders every effective value in one selected parameter profile.
+pub(crate) fn effective_parameter_lines(name: &str, p: &ProfileConfig) -> Vec<String> {
+    vec![
+        format!(" {name} parameter profile (effective):"),
+        format!("   search    candidates {} · seed {}", p.candidates, p.seed),
+        format!(
+            "   capacity  file {} · folder {} · domain {} · package {} · package-group {}",
+            p.capacity.file,
+            p.capacity.folder,
+            p.capacity.domain,
+            p.capacity.package,
+            p.capacity.package_group
+        ),
+        format!(
+            "   objective imbalance {} · naming {} · path {} · anchor {} · capacity {}",
+            weight(p.objective.imbalance),
+            weight(p.objective.naming),
+            weight(p.objective.path),
+            weight(p.objective.anchor),
+            weight(p.objective.capacity)
+        ),
+        format!(
+            "             dependency-only {} · companion-separation {}",
+            weight(p.objective.dependency_only),
+            weight(p.objective.companion_separation)
+        ),
+        format!(
+            "   weights   value-import {} · inheritance {} · call {} · type-reference {} · re-export {}",
+            weight(p.weights.value_import),
+            weight(p.weights.inheritance),
+            weight(p.weights.call),
+            weight(p.weights.type_reference),
+            weight(p.weights.re_export)
+        ),
+        format!(
+            "             same-file-symbol {} · same-file-type {}",
+            weight(p.weights.same_file_symbol),
+            weight(p.weights.same_file_type)
+        ),
+        format!(
+            "   solver    ilp-threshold {} · timeout-seconds {}",
+            p.solver.ilp_threshold, p.solver.timeout_seconds
+        ),
+        format!(
+            "   diversity seeds-per-candidate {} · score-tolerance {} · min-distance {}",
+            p.diversity.seeds_per_candidate,
+            weight(p.diversity.score_tolerance),
+            weight(p.diversity.min_distance)
+        ),
+        format!(
+            "   relocation pin-test-symbols {} · cross-package {} · file patterns {} · symbol patterns {}",
+            p.relocation.pin_detected_test_symbols,
+            p.relocation.allow_cross_package_moves,
+            p.relocation.forbid_file_moves.len(),
+            p.relocation.forbid_symbol_moves.len()
+        ),
+        format!(
+            "              mirroring enabled {} · builtins {} · rules {}",
+            p.relocation.test_mirroring.enabled,
+            p.relocation.test_mirroring.builtins,
+            p.relocation.test_mirroring.rules.len()
+        ),
+        format!(
+            "   qualification evidence {} · structural {} · ambiguity-margin {}",
+            weight(p.qualification.minimum_evidence),
+            weight(p.qualification.minimum_structural),
+            weight(p.qualification.minimum_ambiguity_margin)
+        ),
+        format!(
+            "                 owner {} · role {} · source {} · destination {}",
+            weight(p.qualification.weights.unique_owner),
+            weight(p.qualification.weights.role_affinity),
+            weight(p.qualification.weights.source_cohesion),
+            weight(p.qualification.weights.destination_cohesion)
+        ),
+        format!(
+            "                 producer {} · architectural-reach {}",
+            weight(p.qualification.weights.producer_evidence),
+            weight(p.qualification.weights.architectural_reach)
+        ),
+    ]
+}
+
+/// Accessor for one scored term of a breakdown.
+type Term = fn(&ScoreBreakdown) -> f64;
+
+/// The scored terms that always print, in their fixed table order.
+const TERMS: [(&str, Term); 7] = [
+    ("cut", |breakdown| breakdown.cut),
+    ("imbalance", |breakdown| breakdown.imbalance),
+    ("naming", |breakdown| breakdown.naming),
+    ("path", |breakdown| breakdown.path),
+    ("anchor", |breakdown| breakdown.anchor),
+    ("dependency-only", |breakdown| breakdown.dependency_only),
+    ("companion-separation", |breakdown| {
+        breakdown.companion_separation
+    }),
+];
+
+#[cfg(test)]
+fn report_lines(result: &AnalyzeResult, project: &str) -> Vec<String> {
+    report::Report::build(result, project, RenderOptions::default()).lines()
+}
+
+/// A test sink that fails exactly one write call, chosen by `fail_at`, and
+/// accepts every other call, so a swallowed failure lets the render succeed.
+#[cfg(test)]
+pub(crate) struct FaultySink {
+    /// Zero-based index of the write call that fails.
+    fail_at: usize,
+    /// Number of write calls received so far.
+    calls: usize,
+    /// Bytes accepted by the calls that did not fail.
+    written: Vec<u8>,
+}
+
+#[cfg(test)]
+impl io::Write for FaultySink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let call = self.calls;
+        self.calls += 1;
+        if call == self.fail_at {
+            return Err(io::Error::other("sink closed"));
+        }
+        self.written.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Replays `render` once per write call of its fault-free run, failing only
+/// that call, and counts the replays that still reported success, plus one
+/// when the fault-free run does not reproduce `full`: zero means every write
+/// failure surfaced instead of being swallowed.
+#[cfg(test)]
+pub(crate) fn swallowed_write_faults<E>(
+    full: &[u8],
+    render: impl Fn(&mut FaultySink) -> Result<(), E>,
+) -> usize {
+    let mut probe = FaultySink {
+        fail_at: usize::MAX,
+        calls: 0,
+        written: Vec::new(),
+    };
+    let faithful =
+        render(&mut probe).is_ok() && io::Write::flush(&mut probe).is_ok() && probe.written == full;
+    let swallowed = (0..probe.calls)
+        .filter(|fail_at| {
+            let mut sink = FaultySink {
+                fail_at: *fail_at,
+                calls: 0,
+                written: Vec::new(),
+            };
+            render(&mut sink).is_ok()
+        })
+        .count();
+    swallowed + usize::from(!faithful)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use unlace_engine::{
+        Candidate, CapacityBreach, CapacityRemainder, CapacityUnit, ContainerNode, CurrentStanding,
+        CurrentTree, EdgeBreak, FileMove, Level, Modes, Move, MoveKind, MoveReason, ProfileConfig,
+        ProfileCurrent, ScoreBreakdown, Severity, Summary, SymbolKind, SymbolMove, SymbolPlacement,
+        Violation, ViolationKind,
+    };
+
+    use super::*;
+
+    /// Builds an empty-but-valid result with `violations` on its current tree.
+    /// `capacity_breaks` mirrors the engine's own predicate so synthetic results
+    /// stay internally consistent; a test that needs the mismatch overrides it.
+    fn result_with(violations: Vec<Violation>) -> AnalyzeResult {
+        let hard = violations
+            .iter()
+            .filter(|violation| {
+                violation.kind == ViolationKind::Capacity
+                    && violation.severity == Severity::Violation
+            })
+            .count();
+        let capacity_breaks = u32::try_from(hard).unwrap_or(u32::MAX);
+        AnalyzeResult {
+            schema_version: 1,
+            tests: unlace_engine::TestSettings::default(),
+            snapshot_hash: "deadbeef".to_owned(),
+            summary: Summary {
+                symbols: 2,
+                edges: 1,
+                files: 4,
+                files_by_language: BTreeMap::from([("ts".to_owned(), 4)]),
+            },
+            current: CurrentTree {
+                tree: file_node("lib", 2),
+                shared_findings: Vec::new(),
+            },
+            advice: unlace_engine::Advice::default(),
+            profiles: Modes {
+                anchored: Some(ModeResult {
+                    parameters: ProfileConfig::default(),
+                    current: ProfileCurrent {
+                        score: 1.5,
+                        score_breakdown: zero_breakdown(),
+                        unique_findings: violations,
+                        standing: CurrentStanding::Outscored,
+                        capacity_breaks,
+                    },
+                    candidates: Vec::new(),
+                    pairwise_distance: Vec::new(),
+                    solution_space_converged: false,
+                }),
+                greenfield: None,
+            },
+        }
+    }
+
+    /// Builds a result whose anchored mode carries one candidate whose tree has a
+    /// `proposed` container, for exercising the candidate faces.
+    fn result_with_candidate() -> AnalyzeResult {
+        let mut result = result_with(Vec::new());
+        result.profiles = Modes {
+            anchored: Some(ModeResult {
+                parameters: ProfileConfig::default(),
+                current: ProfileCurrent {
+                    score: 1.5,
+                    score_breakdown: zero_breakdown(),
+                    unique_findings: Vec::new(),
+                    standing: CurrentStanding::Outscored,
+                    capacity_breaks: 0,
+                },
+                candidates: vec![Candidate {
+                    index: 1,
+                    score: 0.25,
+                    score_breakdown: zero_breakdown(),
+                    improvement: 1.25,
+                    tree: ContainerNode {
+                        name: "proposed".to_owned(),
+                        level: Level::Folder,
+                        children: Some(vec![file_node("lib", 1)]),
+                        symbols: None,
+                        production_sloc: None,
+                    },
+                    conditional_splits: Vec::new(),
+                    delta_narration: Vec::new(),
+                    symbol_moves: Vec::new(),
+                    capacity_remainder: None,
+                }],
+                pairwise_distance: Vec::new(),
+                solution_space_converged: true,
+            }),
+            greenfield: None,
+        };
+        result
+    }
+
+    #[test]
+    fn should_follow_combined_multi_package_moves_in_terminal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut result = result_with_candidate();
+        super::combined_package_moves::configure(&mut result)?;
+
+        let terminal = terminal(&result, "workspace")?;
+
+        super::combined_package_moves::assert_paths(&terminal)?;
+        Ok(())
+    }
+
+    /// Renders the default summary face of `result` for `project`.
+    fn terminal(
+        result: &AnalyzeResult,
+        project: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let (options, mut buffer) = (RenderOptions::default(), Vec::new());
+        render_with_options(result, Format::Summary, project, options, &mut buffer)?;
+        Ok(String::from_utf8(buffer)?)
+    }
+
+    /// Builds a zeroed score breakdown.
+    fn zero_breakdown() -> ScoreBreakdown {
+        ScoreBreakdown {
+            cut: 0.0,
+            imbalance: 0.0,
+            naming: 0.0,
+            path: 0.0,
+            anchor: 0.0,
+            dependency_only: 0.0,
+            companion_separation: 0.0,
+            capacity: 0.0,
+        }
+    }
+
+    /// Builds a file container node with `sloc` symbols.
+    fn file_node(name: &str, sloc: u32) -> ContainerNode {
+        ContainerNode {
+            name: name.to_owned(),
+            level: Level::File,
+            children: None,
+            symbols: Some(vec![SymbolPlacement {
+                display: None,
+                name: "thing".to_owned(),
+                visibility: Level::File,
+            }]),
+            production_sloc: Some(sloc),
+        }
+    }
+
+    /// Builds a sample cycle violation.
+    fn cycle() -> Violation {
+        Violation {
+            kind: ViolationKind::Cycle,
+            severity: Severity::Violation,
+            location: vec!["a".to_owned(), "b".to_owned()],
+            detail: "dependency cycle".to_owned(),
+            break_suggestions: None,
+            capacity: None,
+        }
+    }
+
+    /// Builds a capacity violation for `name`.
+    fn capacity_violation(name: &str) -> Violation {
+        Violation {
+            kind: ViolationKind::Capacity,
+            severity: Severity::Violation,
+            location: vec![name.to_owned()],
+            detail: format!("{name} over cap"),
+            break_suggestions: None,
+            capacity: None,
+        }
+    }
+
+    /// Builds a move of one or more files sharing one origin.
+    fn move_of(kind: MoveKind, paths: &[&str], from: &str, to: &str, reason: MoveReason) -> Move {
+        Move {
+            kind,
+            files: paths
+                .iter()
+                .map(|path| FileMove {
+                    path: (*path).to_owned(),
+                    from: from.to_owned(),
+                })
+                .collect(),
+            to: to.to_owned(),
+            reason,
+            mirrors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn should_resolve_to_summary_when_piped_without_an_explicit_format() {
+        assert_eq!(
+            Format::resolve(None, false, Format::Summary),
+            Format::Summary
+        );
+    }
+
+    #[test]
+    fn should_resolve_to_the_human_face_on_a_terminal() {
+        assert_eq!(
+            Format::resolve(None, true, Format::Summary),
+            Format::Summary
+        );
+    }
+
+    #[test]
+    fn should_honour_an_explicit_format_over_the_tty_default() {
+        assert_eq!(
+            Format::resolve(Some(Format::Json), true, Format::Summary),
+            Format::Json
+        );
+    }
+
+    #[test]
+    fn should_render_json_byte_identically_to_the_serialized_result() {
+        let result = result_with(Vec::new());
+        let mut buffer = Vec::new();
+
+        write_json(&result, &mut buffer).unwrap_or_default();
+
+        let mut expected = serde_json::to_vec(&result).unwrap_or_default();
+        expected.push(b'\n');
+        assert_eq!(buffer, expected);
+    }
+
+    #[test]
+    fn should_report_no_violations_when_the_list_is_empty() {
+        let mut buffer = Vec::new();
+
+        write_violation_table(&[], RenderOptions::default(), &mut buffer).unwrap_or_default();
+
+        assert_eq!(
+            buffer,
+            format!("no violations\n{ADVICE_DISCLAIMER}\n").as_bytes()
+        );
+    }
+
+    #[test]
+    fn should_tabulate_a_violation_with_its_kind_and_severity() {
+        let mut buffer = Vec::new();
+
+        write_violation_table(&[cycle()], RenderOptions::default(), &mut buffer)
+            .unwrap_or_default();
+
+        let text = String::from_utf8(buffer).unwrap_or_default();
+        assert_eq!(
+            text,
+            format!("cycle [violation] a, b :: dependency cycle\n{ADVICE_DISCLAIMER}\n")
+        );
+    }
+
+    #[test]
+    fn should_render_a_tree_with_symbols_and_visibility() {
+        let mut buffer = Vec::new();
+
+        render_tree(&file_node("lib", 1), true, None, &mut buffer).unwrap_or_default();
+
+        let text = String::from_utf8(buffer).unwrap_or_default();
+        assert_eq!(
+            text,
+            format!("lib [file] 1 sloc\n  - thing (file)\n{ADVICE_DISCLAIMER}\n")
+        );
+    }
+
+    #[test]
+    fn should_truncate_a_tree_below_the_requested_depth() {
+        let root = ContainerNode {
+            name: "root".to_owned(),
+            level: Level::Folder,
+            children: Some(vec![file_node("child", 1)]),
+            symbols: None,
+            production_sloc: None,
+        };
+        let mut buffer = Vec::new();
+
+        render_tree(&root, false, Some(0), &mut buffer).unwrap_or_default();
+
+        let text = String::from_utf8(buffer).unwrap_or_default();
+        assert_eq!(text, format!("root [folder]\n{ADVICE_DISCLAIMER}\n"));
+    }
+
+    #[test]
+    fn should_quote_every_name_token_in_backticks() {
+        assert_eq!(nq("logger.ts"), "`logger.ts`");
+        assert_eq!(nq("io/util"), "`io/util`");
+    }
+
+    #[test]
+    fn should_wrap_prose_within_the_grid_with_continuation_indents() {
+        let long_text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi \
+                         omicron pi rho sigma tau upsilon phi chi psi omega";
+        let lines = wrap(long_text, 3, 7);
+
+        assert!(lines.len() >= 2, "long prose wraps: {lines:?}");
+        for line in &lines {
+            assert!(line.chars().count() <= 99, "wrapped line fits: {line}");
+        }
+        assert!(
+            lines.first().is_some_and(|first| first.starts_with("   ")),
+            "first pad applies: {lines:?}"
+        );
+        assert!(
+            lines
+                .get(1)
+                .is_some_and(|second| second.starts_with("       ")),
+            "continuation pad applies"
+        );
+    }
+
+    #[test]
+    fn should_trim_weights_to_one_meaningful_decimal() {
+        assert_eq!(weight(1.0), "1.0");
+        assert_eq!(weight(7.8), "7.8");
+        assert_eq!(weight(0.25), "0.25");
+        assert_eq!(weight(6.0), "6.0");
+    }
+
+    #[test]
+    fn should_sign_deltas_explicitly() {
+        assert_eq!(sf(2.4194), "+2.4194");
+        assert_eq!(sf(-0.0041), "-0.0041");
+        // Halfway values follow binary-float formatting (round-half-to-even on
+        // the stored value); pin the unambiguous neighbors instead.
+        assert_eq!(f4(10.23876), "10.2388");
+        assert_eq!(f4(10.23874), "10.2387");
+    }
+
+    #[test]
+    fn should_caption_each_reason_in_the_approved_voice() {
+        assert_eq!(
+            caption_for(&MoveReason::PulledBy {
+                partner: "src/core/engine.ts".to_owned(),
+                weight: 1.0,
+            }),
+            "Why: pulled toward `src/core/engine.ts` — weight 1.0."
+        );
+        assert_eq!(
+            caption_for(&MoveReason::RelievesOverCap {
+                container: "ai/adapters".to_owned(),
+                count: 33,
+                cap: 20,
+                unit: CapacityUnit::Entries,
+                config_key: "capacity.folder".to_owned(),
+            }),
+            "Why: relieves `ai/adapters`, which has 33 entries (files and subfolders) against the folder cap of 20 (`capacity.folder`)."
+        );
+        assert_eq!(
+            caption_for(&MoveReason::Follows {
+                subject: "spec/log.ts".to_owned(),
+            }),
+            "Why: follows `spec/log.ts`, which this plan places nearby."
+        );
+        assert_eq!(
+            caption_for(&MoveReason::Clustering),
+            "Why: clusters files that already import each other heavily."
+        );
+    }
+
+    fn breach_violation(
+        severity: Severity,
+        measured: u32,
+        cap: u32,
+        unit: CapacityUnit,
+        key: &str,
+        real_paths: &[&str],
+    ) -> Violation {
+        Violation {
+            kind: ViolationKind::Capacity,
+            severity,
+            location: vec!["ai/generators".to_owned()],
+            detail: "stale preformatted detail".to_owned(),
+            break_suggestions: None,
+            capacity: Some(CapacityBreach {
+                measured,
+                cap,
+                unit,
+                config_key: key.to_owned(),
+                real_paths: real_paths.iter().map(|path| (*path).to_owned()).collect(),
+                path: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn should_render_capacity_findings_from_structured_fields() {
+        let render = |violation: Violation| {
+            findings::findings_lines("Shared", &[violation], RenderOptions::default())
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        let file = render(breach_violation(
+            Severity::Violation,
+            288,
+            250,
+            CapacityUnit::Lines,
+            "capacity.file",
+            &["spec/debug/doctor.ts"],
+        ));
+        let folder = render(breach_violation(
+            Severity::Violation,
+            25,
+            20,
+            CapacityUnit::Entries,
+            "capacity.folder",
+            &["src/batch/adapters"],
+        ));
+        let domain = render(breach_violation(
+            Severity::Borderline,
+            21,
+            20,
+            CapacityUnit::Folders,
+            "capacity.domain",
+            &["src/generators", "spec/generators"],
+        ));
+
+        assert!(file.contains("- capacity [violation] in `spec/debug/doctor.ts`: 288 production lines; the file cap is 250 (`capacity.file`)."), "{file}");
+        assert!(folder.contains("in `src/batch/adapters`: 25 entries (files and subfolders); the folder cap is 20 (`capacity.folder`)."), "{folder}");
+        assert!(domain.contains("[borderline] in `src/generators` + `spec/generators`: 21 sub-folders directly inside; the domain cap is 20 (`capacity.domain`). src/ and spec/ count together."), "{domain}");
+        for text in [&file, &folder, &domain] {
+            assert!(!text.contains("container ancestry"), "{text}");
+            assert!(!text.contains("stale preformatted"), "{text}");
+        }
+    }
+
+    #[test]
+    fn should_rebuild_cycle_findings_with_quoted_symbols_and_priced_cuts() {
+        let violation = Violation {
+            kind: ViolationKind::Cycle,
+            severity: Severity::Violation,
+            location: vec!["alpha".to_owned(), "beta".to_owned()],
+            detail: "2-symbol cycle".to_owned(),
+            break_suggestions: Some(vec![
+                EdgeBreak {
+                    source: "beta".to_owned(),
+                    target: "alpha".to_owned(),
+                    weight: 1.0,
+                    exact: true,
+                    same_file: false,
+                },
+                EdgeBreak {
+                    source: "alpha".to_owned(),
+                    target: "beta".to_owned(),
+                    weight: 2.0,
+                    exact: false,
+                    same_file: false,
+                },
+            ]),
+            capacity: None,
+        };
+
+        assert_eq!(
+            cycle_finding_text(&violation),
+            "`alpha`/`beta` — 2-symbol cycle; to split it, break `beta` -> `alpha` (w=1.0, exact), +1 more"
+        );
+    }
+
+    #[test]
+    fn should_end_every_text_surface_with_the_one_advice_disclaimer() {
+        let mut table = Vec::new();
+        assert!(write_violation_table(&[], RenderOptions::default(), &mut table).is_ok());
+        let table = String::from_utf8_lossy(&table);
+        assert_eq!(table.matches(ADVICE_DISCLAIMER).count(), 1, "{table}");
+        assert!(table.trim_end().ends_with(ADVICE_DISCLAIMER));
+        assert_eq!(
+            ADVICE_DISCLAIMER,
+            "All findings and moves are suggestions. Applying them may break the build; use your own judgement."
+        );
+    }
+
+    #[test]
+    fn should_explain_cycle_location_and_placement_consequence() {
+        let violation = Violation {
+            kind: ViolationKind::Cycle,
+            severity: Severity::Violation,
+            location: vec!["src/core/left.ts".to_owned(), "src/core/right.ts".to_owned()],
+            detail: "2-symbol cycle; unlace keeps a dependency cycle in one file; to split it, break right -> left (w=1.0, exact)".to_owned(),
+            break_suggestions: Some(vec![EdgeBreak {
+                source: "right".to_owned(),
+                target: "left".to_owned(),
+                weight: 1.0,
+                exact: true,
+                same_file: false,
+            }]),
+            capacity: None,
+        };
+
+        let rendered = cycle_finding_text(&violation);
+
+        assert!(rendered.contains("src/core/left.ts"));
+        assert!(rendered.contains("src/core/right.ts"));
+        assert!(rendered.contains("unlace keeps a dependency cycle in one file"));
+        assert!(!rendered.contains("must remain"));
+        assert!(rendered.contains("to split it, break `right` -> `left` (w=1.0, exact)"));
+    }
+
+    #[test]
+    fn should_render_the_cheapest_cycle_cut_once() {
+        let violation = Violation {
+            kind: ViolationKind::Cycle,
+            severity: Severity::Violation,
+            location: vec!["left.ts".to_owned(), "right.ts".to_owned()],
+            detail: "2-symbol cycle; unlace keeps a dependency cycle in one file; to split it, break right -> left (w=1.0, exact)".to_owned(),
+            break_suggestions: Some(vec![EdgeBreak {
+                source: "right".to_owned(),
+                target: "left".to_owned(),
+                weight: 1.0,
+                exact: true,
+                same_file: false,
+            }]),
+            capacity: None,
+        };
+
+        let rendered = cycle_finding_text(&violation);
+
+        assert_eq!(rendered.matches("break ").count(), 1, "{rendered}");
+    }
+
+    #[test]
+    fn should_describe_nonzero_greenfield_coefficients_without_fixed_zero_claims()
+    -> Result<(), &'static str> {
+        let mut result = result_with_candidate();
+        let mut greenfield = result.profiles.anchored.clone().ok_or("anchored")?;
+        greenfield.parameters.objective.path = 0.7;
+        greenfield.parameters.objective.anchor = 0.8;
+        result.profiles.greenfield = Some(greenfield);
+        let mut output = Vec::new();
+
+        let rendered_ok = render_with_options(
+            &result,
+            Format::Summary,
+            "fixture",
+            RenderOptions {
+                verbose: true,
+                ..RenderOptions::default()
+            },
+            &mut output,
+        )
+        .is_ok();
+        let rendered = String::from_utf8_lossy(&output);
+
+        assert!(rendered_ok);
+        assert!(rendered.contains("path 0.7 · anchor 0.8"), "{rendered}");
+        assert!(!rendered.contains("drops anchor credit"), "{rendered}");
+        assert!(
+            rendered.contains("anchored — candidate 1")
+                && rendered.contains("greenfield — candidate 1"),
+            "{rendered}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn should_prefix_type_moves_without_prefixing_runtime_moves() {
+        let make = |kind| SymbolMove {
+            display: None,
+            symbol: "WorkInput".to_owned(),
+            kind,
+            from_path: "src/task/run.rs".to_owned(),
+            to_path: "src/task/types.rs".to_owned(),
+            delta: -0.002,
+            broken_imports: 4,
+        };
+
+        assert!(symbol_move_line(&make(SymbolKind::Type)).starts_with(" - move type `WorkInput`"));
+        assert!(symbol_move_line(&make(SymbolKind::Symbol)).starts_with(" - move `WorkInput`"));
+    }
+
+    #[test]
+    fn should_render_the_shared_tests_settings_once() {
+        let tests = TestSettings {
+            helper_cap: 250,
+            patterns: vec!["checks/**".to_owned(), "!checks/keep.ts".to_owned()],
+            builtins: false,
+        };
+
+        assert_eq!(
+            effective_tests_line(&tests),
+            "   tests     helper-cap 250 · patterns 2 · builtins false"
+        );
+        assert!(
+            !effective_parameter_lines("anchored", &ProfileConfig::default())
+                .join("\n")
+                .contains("tests     helper-cap"),
+            "a profile carries no test settings of its own"
+        );
+    }
+
+    #[test]
+    fn should_render_every_effective_parameter_group_for_a_profile() {
+        let rendered = effective_parameter_lines("anchored", &ProfileConfig::default()).join("\n");
+
+        for expected in [
+            "anchored parameter profile (effective)",
+            "search    candidates",
+            "capacity  file",
+            "objective imbalance",
+            "weights   value-import",
+            "same-file-symbol",
+            "same-file-type",
+            "solver    ilp-threshold",
+            "diversity seeds-per-candidate",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected}: {rendered}"
+            );
+        }
+        assert_eq!(
+            rendered.matches("dependency-only").count(),
+            1,
+            "the objective exposes dependency-only exactly once: {rendered}"
+        );
+        assert_eq!(
+            rendered.matches("companion-separation").count(),
+            1,
+            "the objective exposes companion-separation exactly once: {rendered}"
+        );
+    }
+
+    #[test]
+    fn should_print_the_claimed_candidate_count_and_list_every_candidate() {
+        let text = report_lines(&result_with_candidate(), "fixture").join("\n");
+        assert!(text.contains("anchored — 1 candidate(s)"));
+        assert_eq!(text.matches("anchored — candidate 1").count(), 1);
+    }
+
+    #[test]
+    fn should_show_each_profile_with_its_own_baseline() {
+        let mut result = result_with_candidate();
+        result.profiles.greenfield = Some(ModeResult {
+            parameters: ProfileConfig::greenfield(),
+            current: ProfileCurrent {
+                score: 1.75,
+                score_breakdown: zero_breakdown(),
+                unique_findings: Vec::new(),
+                standing: CurrentStanding::Outscored,
+                capacity_breaks: 0,
+            },
+            candidates: vec![Candidate {
+                index: 1,
+                score: 0.5,
+                score_breakdown: zero_breakdown(),
+                improvement: 1.0,
+                tree: ContainerNode {
+                    name: "rebuilt".to_owned(),
+                    level: Level::Folder,
+                    children: Some(vec![file_node("lib", 1)]),
+                    symbols: None,
+                    production_sloc: None,
+                },
+                conditional_splits: Vec::new(),
+                delta_narration: Vec::new(),
+                symbol_moves: Vec::new(),
+                capacity_remainder: None,
+            }],
+            pairwise_distance: Vec::new(),
+            solution_space_converged: false,
+        });
+
+        let lines = report_lines(&result, "fixture");
+
+        let text = lines.join("\n");
+        assert!(text.contains("anchored — candidate 1"));
+        assert!(text.contains("greenfield — candidate 1"));
+        assert!(text.contains("Score: 1.5000 → 0.2500"));
+        assert!(text.contains("Score: 1.7500 → 0.5000"));
+    }
+
+    #[test]
+    fn should_not_claim_two_gains_when_both_profiles_have_no_candidates() {
+        let mut result = result_with_candidate();
+        if let Some(anchored) = result.profiles.anchored.as_mut() {
+            anchored.candidates.clear();
+        }
+        result.profiles.greenfield = result.profiles.anchored.clone();
+
+        let text = report_lines(&result, "fixture").join("\n");
+
+        assert!(!text.contains("these two gains"), "{text}");
+        assert!(text.contains("anchored — 0 candidates"), "{text}");
+        assert!(text.contains("greenfield — 0 candidates"), "{text}");
+    }
+
+    #[test]
+    fn should_print_one_line_per_profile_and_none_when_there_is_nothing_to_show() {
+        let mut result = result_with_candidate();
+        if let Some(anchored) = result.profiles.anchored.as_mut() {
+            anchored.candidates.clear();
+        }
+        result.profiles.greenfield = None;
+        result.advice.recommended.clear();
+        result.advice.review_candidates.clear();
+
+        let lines = report_lines(&result, "fixture");
+        let text = lines.join("\n");
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("anchored — 0 candidates (baseline ")),
+            "{text}"
+        );
+        assert!(!text.contains("Lower scores are better"), "{text}");
+        assert!(!text.contains("Supporting profiles selected"), "{text}");
+        let advice = lines.iter().position(|line| line == "Advice");
+        assert_eq!(
+            advice
+                .and_then(|index| lines.get(index + 1))
+                .map(String::as_str),
+            Some("  None."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn should_leave_no_rendered_line_ending_in_whitespace() {
+        let result = result_with_candidate();
+        let mut lines = report_lines(&result, "fixture");
+        lines.extend(wrap(&"word ".repeat(60), 4, 4));
+
+        for line in &lines {
+            assert_eq!(line, line.trim_end(), "trailing whitespace: {line:?}");
+        }
+        let joined = wrap("alpha beta gamma ".repeat(20).trim_end(), 0, 0).join(" ");
+        assert_eq!(joined, "alpha beta gamma ".repeat(20).trim_end());
+    }
+
+    #[test]
+    fn should_end_the_verbose_report_with_every_saved_parameter_line_in_order() {
+        let result = result_with_candidate();
+        let pretty = serde_json::to_string_pretty(&ProfileConfig::default()).unwrap_or_default();
+        let expected = std::iter::once("Complete saved profile parameters:")
+            .chain(pretty.lines())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        let lines = report::Report::build(
+            &result,
+            "fixture",
+            RenderOptions {
+                verbose: true,
+                ..RenderOptions::default()
+            },
+        )
+        .lines();
+
+        assert!(expected.len() > 2, "{pretty}");
+        assert_eq!(
+            lines.get(lines.len().saturating_sub(expected.len())..),
+            Some(expected.as_slice())
+        );
+    }
+
+    #[test]
+    fn should_wrap_empty_text_into_no_lines_rather_than_a_blank_indented_one() {
+        assert!(wrap("", 4, 6).is_empty());
+    }
+
+    #[test]
+    fn should_label_a_same_file_cut_honestly() {
+        let violation = Violation {
+            kind: ViolationKind::Cycle,
+            severity: Severity::Violation,
+            location: vec!["a.rs".to_owned(), "b.rs".to_owned()],
+            detail: "2-symbol cycle".to_owned(),
+            break_suggestions: Some(vec![
+                EdgeBreak {
+                    source: "x".to_owned(),
+                    target: "y".to_owned(),
+                    weight: 1.0,
+                    exact: true,
+                    same_file: false,
+                },
+                EdgeBreak {
+                    source: "p".to_owned(),
+                    target: "q".to_owned(),
+                    weight: 1.0,
+                    exact: true,
+                    same_file: true,
+                },
+            ]),
+            capacity: None,
+        };
+
+        let text =
+            findings::findings_lines("Shared", &[violation], RenderOptions::default()).join("\n");
+
+        assert!(
+            text.contains("Also cut: `p` -> `q` (w=1.0, exact, same file)"),
+            "{text}"
+        );
+        assert!(!text.contains("Suggested cut: `p`"), "{text}");
+    }
+
+    #[test]
+    fn should_label_grain_on_every_suggestion_block() {
+        let mut result = result_with_candidate();
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|mode| mode.candidates.first_mut())
+        {
+            candidate.delta_narration = vec![move_of(
+                MoveKind::Move,
+                &["logger.ts"],
+                "src/util",
+                "src/io",
+                MoveReason::Clustering,
+            )];
+        }
+
+        let lines = report_lines(&result, "fixture");
+
+        let grains = lines
+            .iter()
+            .filter(|line| line.contains("- Move file"))
+            .count();
+        assert_eq!(grains, 1, "each suggestion states its grain: {lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("- Move file `logger.ts`"))
+        );
+    }
+
+    #[test]
+    fn should_keep_every_report_line_inside_the_hundred_column_grid() {
+        let mut result = result_with_candidate();
+        result.summary.files = 900;
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|mode| mode.candidates.first_mut())
+        {
+            candidate.delta_narration = vec![move_of(
+                MoveKind::Merge,
+                &["a-very-long-filename-indeed.spec.integration.ts", "b.ts"],
+                "src/deeply/nested/adapters/anthropic/dispatch/openrouter",
+                "src/equally/deeply/nested/generators/synthographers/adapters/openrouter",
+                MoveReason::PulledBy {
+                    partner: "src/deeply/nested/generators/synthographers/helpers.ts".to_owned(),
+                    weight: 7.8,
+                },
+            )];
+        }
+
+        let lines = report_lines(&result, "fixture");
+
+        for line in &lines {
+            let columns = line.chars().count();
+            assert!(
+                columns <= 100,
+                "line crosses the grid ({columns} cols): {line}"
+            );
+        }
+        let joined = lines.join("").replace(' ', "");
+        assert!(
+            joined.contains(
+                "src/equally/deeply/nested/generators/synthographers/adapters/openrouter"
+            )
+        );
+    }
+
+    #[test]
+    fn should_state_no_change_when_the_best_candidate_matches_today() {
+        let text = report_lines(&result_with_candidate(), "fixture").join("\n");
+        assert!(text.contains("No moves versus the current layout."));
+        assert!(text.contains("No files enter or leave a folder."));
+        assert!(text.contains("No affected branches."));
+    }
+
+    #[test]
+    fn should_not_state_no_change_when_only_symbols_move() {
+        let mut result = result_with_candidate();
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|profile| profile.candidates.first_mut())
+        {
+            candidate.symbol_moves = vec![SymbolMove {
+                display: None,
+                symbol: "helper".to_owned(),
+                kind: SymbolKind::Symbol,
+                from_path: "src/a.ts".to_owned(),
+                to_path: "src/b.ts".to_owned(),
+                delta: -0.1,
+                broken_imports: 0,
+            }];
+        }
+
+        let text = report_lines(&result, "fixture").join("\n");
+
+        assert!(
+            !text.contains("No moves versus the current layout."),
+            "{text}"
+        );
+        assert!(text.contains("helper"), "{text}");
+    }
+
+    #[test]
+    fn should_show_each_component_delta_without_instructing_adoption() {
+        let mut result = result_with_candidate();
+        if let Some(mode) = result.profiles.anchored.as_mut() {
+            mode.current.score_breakdown.imbalance = 1.0;
+            mode.current.score_breakdown.cut = 0.1000;
+        }
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|mode| mode.candidates.first_mut())
+        {
+            candidate.delta_narration = vec![move_of(
+                MoveKind::Move,
+                &["logger.ts"],
+                "src/util",
+                "src/io",
+                MoveReason::Clustering,
+            )];
+            candidate.score_breakdown.imbalance = 0.5;
+            candidate.score_breakdown.cut = 0.0999;
+        }
+        result
+            .profiles
+            .greenfield
+            .clone_from(&result.profiles.anchored);
+
+        let text = report::Report::build(
+            &result,
+            "fixture",
+            RenderOptions {
+                verbose: true,
+                ..RenderOptions::default()
+            },
+        )
+        .lines()
+        .join("\n");
+        assert!(text.contains("-0.5000"));
+        assert!(text.contains("-0.0001"));
+        assert!(text.contains("Partial plans are not"));
+        assert!(!text.contains("apply §2"));
+    }
+
+    #[test]
+    fn should_show_capacity_breaches_and_candidate_remainder() {
+        let mut result = result_with_candidate();
+        result.current.shared_findings = vec![
+            capacity_violation("big_folder"),
+            capacity_violation("huge_file"),
+        ];
+        // the helper seeded the field before these violations existed
+        if let Some(mode) = result.profiles.anchored.as_mut() {
+            mode.current.capacity_breaks = 2;
+            mode.current.standing = CurrentStanding::Infeasible;
+        }
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|mode| mode.candidates.first_mut())
+        {
+            candidate.capacity_remainder = Some(CapacityRemainder {
+                remaining: 1,
+                file_level: 0,
+            });
+        }
+
+        let text = report_lines(&result, "fixture").join("\n");
+
+        assert!(text.contains("Current layout violates 2 capacity cap(s)."));
+        assert!(text.contains("Capacity remaining: 1 (0 at file level)."));
+    }
+
+    #[test]
+    fn should_not_recommend_or_call_a_negative_improvement_a_gain() {
+        let mut result = result_with_candidate();
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|profile| profile.candidates.first_mut())
+        {
+            candidate.score = 2.0;
+            candidate.improvement = -0.5;
+            candidate.delta_narration = vec![move_of(
+                MoveKind::Move,
+                &["worker.ts"],
+                "src/feature",
+                "src/shared",
+                MoveReason::Clustering,
+            )];
+        }
+
+        let text = report_lines(&result, "fixture").join("\n");
+
+        assert!(!text.contains(" adopt      candidate"), "{text}");
+        assert!(!text.contains("gain -0.5000"), "{text}");
+        assert!(text.contains("improvement -0.5000"), "{text}");
+        assert!(!text.contains("adopt"), "{text}");
+    }
+
+    #[test]
+    fn should_keep_shared_findings_once_and_each_profiles_capacity_status() {
+        let mut result = result_with_candidate();
+        result.profiles.greenfield = result.profiles.anchored.clone();
+        result.current.shared_findings = vec![capacity_violation("big_folder")];
+        // the helper seeded the field before this violation existed
+        if let Some(mode) = result.profiles.anchored.as_mut() {
+            mode.current.capacity_breaks = 1;
+            mode.current.standing = CurrentStanding::Infeasible;
+        }
+        if let Some(mode) = result.profiles.greenfield.as_mut() {
+            mode.current.capacity_breaks = 1;
+            mode.current.standing = CurrentStanding::Infeasible;
+        }
+
+        let text = report_lines(&result, "fixture").join("\n");
+
+        assert_eq!(
+            text.matches("Current layout violates 1 capacity cap(s).")
+                .count(),
+            2
+        );
+        assert_eq!(text.matches("Shared findings (1)").count(), 1);
+    }
+
+    #[test]
+    fn should_count_only_hard_capacity_findings_as_breaks() {
+        let mut result = result_with_candidate();
+        // Two hard breaches plus a borderline observation: the note counts the
+        // breaks from the engine's `capacity_breaks`, while Structural findings
+        // lists all three findings with their severity tags.
+        result.current.shared_findings = vec![
+            capacity_violation("big_folder"),
+            capacity_violation("huge_file"),
+            {
+                let mut borderline = capacity_violation("warm_folder");
+                borderline.severity = Severity::Borderline;
+                borderline
+            },
+        ];
+        // what the engine reports for exactly this shape (borderline excluded)
+        if let Some(mode) = result.profiles.anchored.as_mut() {
+            mode.current.capacity_breaks = 2;
+            mode.current.standing = CurrentStanding::Infeasible;
+        }
+
+        let text = report_lines(&result, "fixture").join("\n");
+
+        assert!(
+            text.contains("Current layout violates 2 capacity cap(s).")
+                && text.contains("[borderline]"),
+            "borderline observations never count as breaks: {text}"
+        );
+    }
+
+    #[test]
+    fn should_show_score_components_and_definitions_only_with_verbose() {
+        let result = result_with_candidate();
+        let quiet = report_lines(&result, "fixture").join("\n");
+        let verbose = report::Report::build(
+            &result,
+            "fixture",
+            RenderOptions {
+                verbose: true,
+                ..RenderOptions::default()
+            },
+        )
+        .lines()
+        .join("\n");
+        assert!(!quiet.contains("Score components"));
+        assert!(verbose.contains("Score components"));
+        assert!(verbose.contains("capacity penalizes"));
+        assert!(
+            verbose
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains("dependency-only penalizes")
+        );
+    }
+
+    #[test]
+    fn should_preserve_wrapped_tree_geometry_and_literals_in_both_report_formats()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use unicode_width::UnicodeWidthStr;
+
+        let mut result = result_with_candidate();
+        let source_name = format!("a{}  literal*.ts", "界e\u{301} part  ".repeat(28));
+        let destination_name = format!("z{}  destination.ts", "wide界  ".repeat(35));
+        let source = format!("src/deep/{source_name}");
+        let destination = format!("src/deep/{destination_name}");
+        let symbol = format!("Long{}Name", "界e\u{301}".repeat(100));
+        let candidate = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|profile| profile.candidates.first_mut())
+            .ok_or("missing candidate")?;
+        candidate.symbol_moves = vec![SymbolMove {
+            display: None,
+            symbol: symbol.clone(),
+            kind: SymbolKind::Type,
+            from_path: source.clone(),
+            to_path: destination.clone(),
+            delta: -0.1,
+            broken_imports: 0,
+        }];
+
+        let terminal = terminal(&result, &result.current.tree.name)?;
+        let markdown = markdown(&result, RenderOptions::default());
+
+        let mut rendered_trees = Vec::new();
+        for output in [&terminal, &markdown] {
+            assert!(output.lines().all(|line| line.width() <= 100), "{output}");
+            let (_, trees) = output.split_once("Before").ok_or("missing Before")?;
+            let (before, _) = trees.split_once("After").ok_or("missing After")?;
+            for (first_prefix, continuation, expected) in [
+                (
+                    "            ├── ",
+                    "            │   ",
+                    format!("{source_name} *"),
+                ),
+                (
+                    "            └── ",
+                    "                ",
+                    format!("{destination_name} *"),
+                ),
+                (
+                    "            │   └── ",
+                    "            │       ",
+                    format!("type `{symbol}` [to {destination}]"),
+                ),
+            ] {
+                assert_wrapped_tree_label(before, first_prefix, continuation, &expected)?;
+            }
+            rendered_trees.push(before.to_owned());
+        }
+        assert_eq!(rendered_trees.len(), 2, "one tree per report format");
+        assert_eq!(rendered_trees.first(), rendered_trees.get(1));
+        Ok(())
+    }
+
+    fn assert_wrapped_tree_label(
+        tree: &str,
+        first_prefix: &str,
+        continuation: &str,
+        expected: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut lines = tree.lines();
+        let first = lines.find_map(|line| line.strip_prefix(first_prefix));
+        assert!(first.is_some(), "missing branch {first_prefix:?}: {tree}");
+        let first = first.unwrap_or_default();
+        // a break consumes the whitespace it falls on, so lines carry no
+        // trailing space; the text is compared without whitespace.
+        let squash = |text: &str| -> String { text.split_whitespace().collect() };
+        let mut restored = first.to_owned();
+        let mut segments = 1;
+        while squash(&restored).len() < squash(expected).len() {
+            let next = lines.next().ok_or("missing wrapped continuation")?;
+            let content = next.strip_prefix(continuation);
+            assert!(
+                content.is_some(),
+                "continuation lost geometry {continuation:?}: {next:?}"
+            );
+            restored.push_str(content.unwrap_or_default());
+            segments += 1;
+        }
+        assert!(
+            segments >= 3,
+            "fixture must exercise intermediate continuations"
+        );
+        assert_eq!(
+            squash(&restored),
+            squash(expected),
+            "names, paths, and stars must survive"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn should_keep_deep_tree_paths_inside_the_report_width()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use unicode_width::UnicodeWidthStr;
+
+        let mut result = result_with_candidate();
+        let components = (0..24)
+            .map(|index| format!("component{index:02}/"))
+            .collect::<Vec<_>>();
+        let ancestry = components.concat();
+        let destination = format!("{ancestry}界z.ts");
+        let candidate = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|profile| profile.candidates.first_mut())
+            .ok_or("missing candidate")?;
+        candidate.symbol_moves = vec![SymbolMove {
+            display: None,
+            symbol: "Options".into(),
+            kind: SymbolKind::Type,
+            from_path: format!("{ancestry}界a.ts"),
+            to_path: destination.clone(),
+            delta: -0.1,
+            broken_imports: 0,
+        }];
+
+        let terminal = terminal(&result, &result.current.tree.name)?;
+        let markdown = markdown(&result, RenderOptions::default());
+
+        let mut trees = Vec::new();
+        for output in [&terminal, &markdown] {
+            for line in output.lines() {
+                assert!(line.width() <= 100, "{} columns: {line:?}", line.width());
+            }
+            let (_, tree) = output.split_once("Before").ok_or("missing Before")?;
+            let (before, _) = tree.split_once("After").ok_or("missing After")?;
+            let mut lines = before
+                .lines()
+                .skip_while(|line| !line.contains("component00/"));
+            for (index, component) in components.iter().enumerate() {
+                let indentation = "    ".repeat(index + 1);
+                let (expected, continuation) = (
+                    format!("{indentation}└── {component}"),
+                    format!("{indentation}    "),
+                );
+                assert_deep_tree_line(&mut lines, &expected, &continuation)?;
+            }
+            let indentation = "    ".repeat(25);
+            for (expected, continuation) in [
+                ("├── 界a.ts *".to_owned(), "│   "),
+                (
+                    format!("│   └── type `Options` [to {destination}]"),
+                    "│       ",
+                ),
+                ("└── 界z.ts *".to_owned(), "    "),
+            ] {
+                let (expected, continuation) = (
+                    format!("{indentation}{expected}"),
+                    format!("{indentation}{continuation}"),
+                );
+                assert_deep_tree_line(&mut lines, &expected, &continuation)?;
+            }
+            assert!(lines.all(|line| line.is_empty() || line == "  "));
+            trees.push(before.to_owned());
+        }
+        assert_eq!(trees.len(), 2, "one tree per report format");
+        assert_eq!(trees.first(), trees.get(1));
+        Ok(())
+    }
+
+    fn assert_deep_tree_line<'text>(
+        lines: &mut impl Iterator<Item = &'text str>,
+        expected: &str,
+        continuation: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let squash = |text: &str| -> String { text.split_whitespace().collect() };
+        let mut restored = lines.next().ok_or("missing tree line")?.to_owned();
+        while squash(&restored).len() < squash(expected).len() {
+            assert!(
+                squash(expected).starts_with(&squash(&restored)),
+                "unexpected tree payload {restored:?}"
+            );
+            let next = lines.next().ok_or("missing deep continuation")?;
+            let suffix: String = continuation.chars().rev().take(76).collect();
+            let elided = format!("… {}", suffix.chars().rev().collect::<String>());
+            // an elided continuation starts with `… `; a plain one never does.
+            let payload = [elided.as_str(), continuation]
+                .into_iter()
+                .find_map(|prefix| next.strip_prefix(prefix))
+                .ok_or("invalid deep geometry")?;
+            assert!(!payload.is_empty(), "continuation must make progress");
+            restored.push_str(payload);
+        }
+        assert_eq!(
+            squash(&restored),
+            squash(expected),
+            "deep tree payload must survive"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn should_report_the_converged_solution_space_exactly_when_a_mode_converges() {
+        let converged = report_lines(&result_with_candidate(), "fixture").join("\n");
+        assert!(converged.contains("the solution space converged"));
+
+        let mut diverged = result_with_candidate();
+        if let Some(mode) = diverged.profiles.anchored.as_mut() {
+            mode.solution_space_converged = false;
+        }
+        let diverged_text = report_lines(&diverged, "fixture").join("\n");
+        assert!(!diverged_text.contains("solution space converged"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn should_present_only_recommended_and_review_candidate_advice_groups() {
+        let mut result = result_with_candidate();
+        let assessment = unlace_engine::ProfileAssessment {
+            profile: unlace_engine::ProfileName::Anchored,
+            destination: "shared/owner.ts".to_owned(),
+            evidence: unlace_engine::EvidenceSignals {
+                unique_owner: 1.0,
+                role_affinity: 0.8,
+                source_cohesion: 0.7,
+                destination_cohesion: 0.6,
+                producer_evidence: 0.5,
+                architectural_reach: 0.4,
+            },
+            weighted_score: 0.75,
+            structural_score: 0.65,
+            ambiguity_margin: 0.2,
+            best_alternative: Some("shared/alternative.ts".to_owned()),
+            thresholds: unlace_engine::QualificationThresholds {
+                minimum_evidence: 0.6,
+                minimum_structural: 0.5,
+                minimum_ambiguity_margin: 0.15,
+            },
+            qualified: true,
+        };
+        let relocation = SymbolMove {
+            display: None,
+            symbol: "RecordOptions".to_owned(),
+            kind: SymbolKind::Type,
+            from_path: "origin/options.ts".to_owned(),
+            to_path: "shared/owner.ts".to_owned(),
+            delta: -0.1,
+            broken_imports: 1,
+        };
+        let candidate = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|profile| profile.candidates.first_mut());
+        assert!(candidate.is_some(), "fixture has an anchored candidate");
+        if let Some(candidate) = candidate {
+            candidate.symbol_moves = vec![relocation.clone()];
+        }
+        let item = unlace_engine::RelocationAdvice {
+            proposal: unlace_engine::RelocationProposal::Symbol { relocation },
+            destination: "shared/owner.ts".to_owned(),
+            supporting_profiles: vec![unlace_engine::ProfileName::Anchored],
+            qualified_profiles: vec![unlace_engine::ProfileName::Anchored],
+            absent_profiles: vec![unlace_engine::ProfileName::Greenfield],
+            conflicting_destinations: vec![unlace_engine::ProfileConflict {
+                profile: unlace_engine::ProfileName::Greenfield,
+                destination: "shared/alternative.ts".to_owned(),
+            }],
+            assessments: vec![assessment],
+            review_reasons: vec![unlace_engine::ReviewReason::PartialProfileSupport],
+        };
+        result.advice.recommended = vec![item.clone()];
+        result.advice.review_candidates = vec![item];
+        let text = report::Report::build(
+            &result,
+            "fixture",
+            RenderOptions {
+                verbose: true,
+                ..RenderOptions::default()
+            },
+        )
+        .lines()
+        .join("\n");
+        let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(text.contains("Recommended"), "{text}");
+        assert!(text.contains("Review candidate"), "{text}");
+        for expected in [
+            "supporting [anchored]",
+            "qualified [anchored]",
+            "absent [greenfield]",
+            "greenfield→`shared/alternative.ts`",
+            "owner 1.00",
+            "role 0.80",
+            "source 0.70",
+            "destination 0.60",
+            "producer 0.50",
+            "reach 0.40",
+            "weighted 0.75/0.60",
+            "structural 0.65/0.50",
+            "margin threshold 0.15",
+            "qualified true",
+            "best alternative `shared/alternative.ts`",
+            "review reasons: selected by only some executed profiles",
+            "RecordOptions",
+            "origin/options.ts",
+        ] {
+            assert!(
+                compact.contains(expected),
+                "missing `{expected}` from:\n{text}"
+            );
+        }
+        assert!(
+            !text.contains("Rejected"),
+            "ordinary non-moves stay absent: {text}"
+        );
+        assert!(
+            !compact.contains("adopt candidate"),
+            "a surfaced review-only atom makes blanket adoption unsafe: {text}"
+        );
+
+        let mut fully_recommended = result;
+        fully_recommended.advice.review_candidates.clear();
+        let recommended_text = report_lines(&fully_recommended, "fixture")
+            .join("\n")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            recommended_text.contains("Recommended (1)")
+                && recommended_text.contains("Review candidate (0)"),
+            "qualified actions remain recommended without endorsing an entire candidate: {recommended_text}"
+        );
+    }
+
+    #[test]
+    fn should_render_file_advice_alternatives_with_their_physical_source_root() {
+        let mut result = result_with_candidate();
+        result.advice.review_candidates = vec![unlace_engine::RelocationAdvice {
+            proposal: unlace_engine::RelocationProposal::File {
+                relocation: Move {
+                    kind: MoveKind::Move,
+                    files: vec![FileMove {
+                        path: "dataset/src/origin/unit.ts".to_owned(),
+                        from: "dataset/src/origin".to_owned(),
+                    }],
+                    to: "dataset/src/chosen".to_owned(),
+                    reason: MoveReason::Clustering,
+                    mirrors: Vec::new(),
+                },
+            },
+            destination: "dataset/src/chosen".to_owned(),
+            supporting_profiles: vec![unlace_engine::ProfileName::Anchored],
+            qualified_profiles: Vec::new(),
+            absent_profiles: vec![unlace_engine::ProfileName::Greenfield],
+            conflicting_destinations: Vec::new(),
+            assessments: vec![unlace_engine::ProfileAssessment {
+                profile: unlace_engine::ProfileName::Anchored,
+                destination: "dataset/src/chosen".to_owned(),
+                evidence: unlace_engine::EvidenceSignals {
+                    unique_owner: 0.0,
+                    role_affinity: 0.0,
+                    source_cohesion: 0.0,
+                    destination_cohesion: 0.0,
+                    producer_evidence: 0.0,
+                    architectural_reach: 0.0,
+                },
+                weighted_score: 0.0,
+                structural_score: 0.0,
+                ambiguity_margin: 0.0,
+                best_alternative: Some("dataset/src/alternative".to_owned()),
+                thresholds: unlace_engine::QualificationThresholds {
+                    minimum_evidence: 0.6,
+                    minimum_structural: 0.5,
+                    minimum_ambiguity_margin: 0.15,
+                },
+                qualified: false,
+            }],
+            review_reasons: vec![unlace_engine::ReviewReason::PartialProfileSupport],
+        }];
+
+        let text = report::Report::build(
+            &result,
+            "dataset",
+            RenderOptions {
+                verbose: true,
+                ..RenderOptions::default()
+            },
+        )
+        .lines()
+        .join("\n");
+
+        assert!(text.contains("file `dataset/src/origin/unit.ts` → `dataset/src/chosen`"));
+        assert!(text.contains("best alternative `dataset/src/alternative`"));
+        assert!(!text.contains("best alternative `dataset/spec/alternative`"));
+    }
+
+    #[test]
+    fn should_print_real_move_paths_as_the_result_carries_them() {
+        // a flat layout (`proj/proj/hub`): the group label `proj` is also a real
+        // top-level directory, so the paths the engine emits keep that segment.
+        let mut result = result_with_candidate();
+        result.current.tree = ContainerNode {
+            name: "proj".to_owned(),
+            level: Level::PackageGroup,
+            children: Some(vec![file_node("proj/hub/a.py", 1)]),
+            symbols: None,
+            production_sloc: None,
+        };
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|mode| mode.candidates.first_mut())
+        {
+            candidate.delta_narration = vec![
+                move_of(
+                    MoveKind::Move,
+                    &["proj/hub/a.py"],
+                    "proj/hub",
+                    "proj/hub/ingest",
+                    MoveReason::RelievesOverCap {
+                        container: "proj/hub".to_owned(),
+                        count: 24,
+                        cap: 20,
+                        unit: CapacityUnit::Entries,
+                        config_key: "capacity.folder".to_owned(),
+                    },
+                ),
+                move_of(
+                    MoveKind::Move,
+                    &["proj/b.py"],
+                    "proj",
+                    ".",
+                    MoveReason::Clustering,
+                ),
+            ];
+        }
+
+        let text = report::Report::build(&result, "proj", RenderOptions::default())
+            .lines()
+            .join("\n");
+
+        assert!(
+            text.contains("Move file `proj/hub/a.py` → `proj/hub/ingest/a.py`"),
+            "{text}"
+        );
+        assert!(
+            text.contains("relieves `proj/hub`, which has 24 entries"),
+            "{text}"
+        );
+        assert!(text.contains("`proj/hub`: 1 file(s) leaving"), "{text}");
+        assert!(text.contains("Move file `proj/b.py` → `b.py`"), "{text}");
+    }
+
+    #[test]
+    fn should_carry_no_control_characters_and_no_off_page_tokens() {
+        let mut result = result_with_candidate();
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|mode| mode.candidates.first_mut())
+        {
+            candidate.delta_narration = vec![move_of(
+                MoveKind::Move,
+                &["logger.ts"],
+                "src/util",
+                "src/io",
+                MoveReason::Clustering,
+            )];
+        }
+        let lines = report_lines(&result, "fixture");
+
+        for line in &lines {
+            let bad = line.chars().find(|ch| ch.is_control());
+            assert!(
+                bad.is_none(),
+                "control character {bad:?} reached the page: {line}"
+            );
+        }
+        let text = lines.join("\n");
+        for banned in ["snapshot", "payload", "mockup", "DSG05"] {
+            assert!(
+                !text.contains(banned),
+                "provenance token {banned} stays off the page"
+            );
+        }
+        for interactive in ["menu", "press ", "click", "navigate"] {
+            assert!(
+                !text.to_lowercase().contains(interactive),
+                "interactive token {interactive} stays off the page"
+            );
+        }
+    }
+
+    #[test]
+    fn should_banner_the_project_with_compact_saved_metadata() {
+        let text = report_lines(&result_with_candidate(), "acme").join("\n");
+        assert!(text.starts_with("Unlace report — acme\n4 files · 2 symbols · 1 edges"));
+        assert!(text.contains("Snapshot `deadbeef`"));
+        assert!(text.contains("Structural findings"));
+        assert!(!text.contains("future capability"));
+    }
+
+    #[test]
+    fn should_report_no_moves_for_an_empty_narration() {
+        let candidate = Candidate {
+            index: 1,
+            score: 0.0,
+            score_breakdown: zero_breakdown(),
+            improvement: 0.0,
+            tree: file_node("lib", 1),
+            conditional_splits: Vec::new(),
+            delta_narration: Vec::new(),
+            symbol_moves: Vec::new(),
+            capacity_remainder: None,
+        };
+        let mut buffer = Vec::new();
+
+        render_diff(&candidate, &mut buffer).unwrap_or_default();
+
+        assert_eq!(
+            buffer,
+            format!("no moves\n{ADVICE_DISCLAIMER}\n").as_bytes()
+        );
+    }
+
+    #[test]
+    fn should_narrate_a_move_with_its_from_and_to_paths() {
+        let candidate = Candidate {
+            index: 1,
+            score: 0.0,
+            score_breakdown: zero_breakdown(),
+            improvement: 1.25,
+            tree: file_node("lib", 1),
+            conditional_splits: Vec::new(),
+            delta_narration: vec![move_of(
+                MoveKind::Move,
+                &["alpha"],
+                "old",
+                "new",
+                MoveReason::Clustering,
+            )],
+            symbol_moves: Vec::new(),
+            capacity_remainder: None,
+        };
+        let mut buffer = Vec::new();
+
+        render_diff(&candidate, &mut buffer).unwrap_or_default();
+
+        let text = String::from_utf8(buffer).unwrap_or_default();
+        assert_eq!(
+            text,
+            format!(
+                "moves (1 group(s), 1 file(s); gain +1.2500):\nmove — regrouped by clustering\n  1. alpha [old → new]\n{ADVICE_DISCLAIMER}\n"
+            )
+        );
+    }
+
+    #[test]
+    fn should_describe_diff_regressions_and_zero_changes_without_calling_them_gains() {
+        let regression = Candidate {
+            index: 1,
+            score: 2.0,
+            score_breakdown: zero_breakdown(),
+            improvement: -0.5,
+            tree: file_node("lib", 1),
+            conditional_splits: Vec::new(),
+            delta_narration: vec![move_of(
+                MoveKind::Move,
+                &["worker.ts"],
+                "src/feature",
+                "src/shared",
+                MoveReason::Clustering,
+            )],
+            symbol_moves: Vec::new(),
+            capacity_remainder: None,
+        };
+        let unchanged = Candidate {
+            index: 1,
+            score: 1.5,
+            score_breakdown: zero_breakdown(),
+            improvement: 0.0,
+            tree: file_node("lib", 1),
+            conditional_splits: Vec::new(),
+            delta_narration: Vec::new(),
+            symbol_moves: vec![SymbolMove {
+                display: None,
+                symbol: "WorkInput".to_owned(),
+                kind: SymbolKind::Type,
+                from_path: "src/task/run.rs".to_owned(),
+                to_path: "src/task/types.rs".to_owned(),
+                delta: 0.0,
+                broken_imports: 1,
+            }],
+            capacity_remainder: None,
+        };
+        let mut regression_output = Vec::new();
+        let mut unchanged_output = Vec::new();
+
+        render_diff(&regression, &mut regression_output).unwrap_or_default();
+        render_diff(&unchanged, &mut unchanged_output).unwrap_or_default();
+
+        let regression_text = String::from_utf8(regression_output).unwrap_or_default();
+        let unchanged_text = String::from_utf8(unchanged_output).unwrap_or_default();
+        assert!(
+            regression_text.starts_with("moves (1 group(s), 1 file(s); regression 0.5000):"),
+            "{regression_text}"
+        );
+        assert!(
+            unchanged_text.starts_with("symbol moves (1 symbol(s); no improvement):"),
+            "{unchanged_text}"
+        );
+        assert!(!regression_text.contains("gain"), "{regression_text}");
+        assert!(!unchanged_text.contains("gain"), "{unchanged_text}");
+    }
+
+    #[test]
+    fn should_number_every_file_of_a_large_move_group() {
+        let candidate = Candidate {
+            index: 1,
+            score: 0.0,
+            score_breakdown: zero_breakdown(),
+            improvement: 0.5,
+            tree: file_node("lib", 1),
+            conditional_splits: Vec::new(),
+            delta_narration: vec![move_of(
+                MoveKind::Merge,
+                &["a.ts", "b.ts", "c.ts", "d.ts"],
+                "old",
+                "new",
+                MoveReason::Clustering,
+            )],
+            symbol_moves: Vec::new(),
+            capacity_remainder: None,
+        };
+        let mut buffer = Vec::new();
+
+        render_diff(&candidate, &mut buffer).unwrap_or_default();
+
+        let text = String::from_utf8(buffer).unwrap_or_default();
+        assert!(
+            text.contains("merge — regrouped by clustering\n"),
+            "the group header names its reason: {text}"
+        );
+        for (step, file) in ["a.ts", "b.ts", "c.ts", "d.ts"].into_iter().enumerate() {
+            assert!(
+                text.contains(&format!("  {}. {file} [old → new]\n", step + 1)),
+                "{file}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_render_each_files_own_source_in_a_merge() {
+        let candidate = Candidate {
+            index: 1,
+            score: 0.0,
+            score_breakdown: zero_breakdown(),
+            improvement: 0.5,
+            tree: file_node("lib", 1),
+            conditional_splits: Vec::new(),
+            delta_narration: vec![Move {
+                kind: MoveKind::Merge,
+                files: vec![
+                    FileMove {
+                        path: "a.ts".to_owned(),
+                        from: "one".to_owned(),
+                    },
+                    FileMove {
+                        path: "b.ts".to_owned(),
+                        from: "two".to_owned(),
+                    },
+                ],
+                to: "new".to_owned(),
+                reason: MoveReason::Clustering,
+                mirrors: Vec::new(),
+            }],
+            symbol_moves: Vec::new(),
+            capacity_remainder: None,
+        };
+        let mut buffer = Vec::new();
+
+        render_diff(&candidate, &mut buffer).unwrap_or_default();
+
+        let text = String::from_utf8(buffer).unwrap_or_default();
+        assert!(text.contains("  1. a.ts [one → new]\n"), "{text}");
+        assert!(text.contains("  2. b.ts [two → new]\n"), "{text}");
+    }
+
+    /// Builds `count` capacity findings named `c0`, `c1`, ... at `severity`.
+    fn findings_at(count: usize, severity: Severity) -> Vec<Violation> {
+        (0..count)
+            .map(|index| Violation {
+                severity,
+                ..capacity_violation(&format!("c{index}"))
+            })
+            .collect()
+    }
+
+    /// Counts the `… N more` lines in `text`.
+    fn more_lines(text: &str) -> Vec<&str> {
+        text.lines()
+            .filter(|line| line.contains("more — rerun with --full to see all"))
+            .collect()
+    }
+
+    fn summary(result: &AnalyzeResult, options: RenderOptions) -> String {
+        let mut buffer = Vec::new();
+        render_with_options(result, Format::Summary, "fixture", options, &mut buffer)
+            .unwrap_or_default();
+        String::from_utf8(buffer).unwrap_or_default()
+    }
+
+    fn full() -> RenderOptions {
+        RenderOptions {
+            full: true,
+            ..RenderOptions::default()
+        }
+    }
+
+    #[test]
+    fn should_cap_findings_at_five_with_the_true_total_and_a_more_line() {
+        let result = result_with(findings_at(8, Severity::Violation));
+
+        let text = summary(&result, RenderOptions::default());
+
+        assert!(
+            text.contains("anchored profile-specific findings (8)"),
+            "{text}"
+        );
+        assert_eq!(text.matches("- capacity [violation]").count(), 5, "{text}");
+        assert_eq!(
+            more_lines(&text),
+            vec!["  … 3 more — rerun with --full to see all"]
+        );
+    }
+
+    #[test]
+    fn should_not_add_a_more_line_for_exactly_five_findings() {
+        let result = result_with(findings_at(5, Severity::Violation));
+
+        let text = summary(&result, RenderOptions::default());
+
+        assert_eq!(text.matches("- capacity [violation]").count(), 5, "{text}");
+        assert_eq!(more_lines(&text).len(), 0, "{text}");
+    }
+
+    #[test]
+    fn should_show_every_finding_with_full() {
+        let result = result_with(findings_at(8, Severity::Violation));
+
+        let text = summary(&result, full());
+
+        assert_eq!(text.matches("- capacity [violation]").count(), 8, "{text}");
+        assert_eq!(more_lines(&text).len(), 0, "{text}");
+    }
+
+    #[test]
+    fn should_show_hard_violations_before_borderline_findings_when_capped() {
+        let mut findings = findings_at(6, Severity::Borderline);
+        findings.extend(findings_at(2, Severity::Violation));
+        let result = result_with(findings);
+
+        let text = summary(&result, RenderOptions::default());
+
+        assert_eq!(text.matches("[violation]").count(), 2, "{text}");
+        assert_eq!(text.matches("[borderline]").count(), 3, "{text}");
+    }
+
+    #[test]
+    fn should_cap_each_advice_list_on_its_own() {
+        let mut result = result_with_candidate();
+        let item = |index: usize| {
+            let relocation = SymbolMove {
+                display: None,
+                symbol: format!("Thing{index}"),
+                kind: SymbolKind::Type,
+                from_path: format!("origin/options{index}.ts"),
+                to_path: "shared/owner.ts".to_owned(),
+                delta: -0.1,
+                broken_imports: 1,
+            };
+            unlace_engine::RelocationAdvice {
+                proposal: unlace_engine::RelocationProposal::Symbol { relocation },
+                destination: "shared/owner.ts".to_owned(),
+                supporting_profiles: vec![unlace_engine::ProfileName::Anchored],
+                qualified_profiles: Vec::new(),
+                absent_profiles: Vec::new(),
+                conflicting_destinations: Vec::new(),
+                assessments: Vec::new(),
+                review_reasons: Vec::new(),
+            }
+        };
+        result.advice.recommended = (0..7).map(item).collect();
+        result.advice.review_candidates = (0..5).map(item).collect();
+
+        let capped = summary(&result, RenderOptions::default());
+        let everything = summary(&result, full());
+
+        assert!(capped.contains(" Recommended (7):"), "{capped}");
+        assert!(capped.contains(" Review candidate (5):"), "{capped}");
+        assert_eq!(
+            more_lines(&capped),
+            vec!["   … 2 more — rerun with --full to see all"]
+        );
+        assert_eq!(more_lines(&everything).len(), 0);
+        assert_eq!(
+            everything.matches("- type `Thing").count() - capped.matches("- type `Thing").count(),
+            2
+        );
+    }
+
+    fn advice_symbol(name: &str, kind: SymbolKind, from: &str) -> unlace_engine::RelocationAdvice {
+        unlace_engine::RelocationAdvice {
+            proposal: unlace_engine::RelocationProposal::Symbol {
+                relocation: SymbolMove {
+                    display: None,
+                    symbol: name.to_owned(),
+                    kind,
+                    from_path: from.to_owned(),
+                    to_path: "src/a.ts".to_owned(),
+                    delta: -0.1,
+                    broken_imports: 1,
+                },
+            },
+            destination: "src/a.ts".to_owned(),
+            supporting_profiles: vec![unlace_engine::ProfileName::Anchored],
+            qualified_profiles: Vec::new(),
+            absent_profiles: Vec::new(),
+            conflicting_destinations: Vec::new(),
+            assessments: Vec::new(),
+            review_reasons: vec![unlace_engine::ReviewReason::WeakEvidence],
+        }
+    }
+
+    fn advice_text(items: Vec<unlace_engine::RelocationAdvice>, options: RenderOptions) -> String {
+        let mut result = result_with_candidate();
+        result.advice.review_candidates = items;
+        summary(&result, options)
+    }
+
+    fn flat(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn assessment_for(margin: f64) -> unlace_engine::ProfileAssessment {
+        unlace_engine::ProfileAssessment {
+            profile: unlace_engine::ProfileName::Anchored,
+            destination: "src/a.ts".to_owned(),
+            evidence: unlace_engine::EvidenceSignals {
+                unique_owner: 0.5,
+                role_affinity: 0.5,
+                source_cohesion: 0.5,
+                destination_cohesion: 0.5,
+                producer_evidence: 0.5,
+                architectural_reach: 0.5,
+            },
+            weighted_score: 0.5,
+            structural_score: 0.5,
+            ambiguity_margin: margin,
+            best_alternative: None,
+            thresholds: unlace_engine::QualificationThresholds {
+                minimum_evidence: 0.5,
+                minimum_structural: 0.5,
+                minimum_ambiguity_margin: 0.1,
+            },
+            qualified: true,
+        }
+    }
+
+    #[test]
+    fn should_merge_symbols_sharing_source_destination_and_evidence() {
+        let items = vec![
+            advice_symbol("emitError", SymbolKind::Symbol, "src/a/helpers.ts"),
+            advice_symbol("emitThinking", SymbolKind::Symbol, "src/a/helpers.ts"),
+        ];
+
+        let text = advice_text(items, RenderOptions::default());
+
+        assert!(text.contains(" Review candidate (2):"), "{text}");
+        assert!(
+            flat(&text).contains("- 2 symbols `emitError`, `emitThinking` from `src/a/helpers.ts` → `src/a.ts` · supporting [anchored] · qualified [] · absent [] · conflicts []"),
+            "{text}"
+        );
+        assert_eq!(text.matches("review reasons:").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn should_not_merge_symbols_whose_review_reasons_differ() {
+        let mut other = advice_symbol("emitThinking", SymbolKind::Symbol, "src/a/helpers.ts");
+        other.review_reasons = vec![unlace_engine::ReviewReason::WeakStructuralEvidence];
+        let items = vec![
+            advice_symbol("emitError", SymbolKind::Symbol, "src/a/helpers.ts"),
+            other,
+        ];
+
+        let text = advice_text(items, RenderOptions::default());
+
+        assert!(text.contains("- symbol `emitError` from"), "{text}");
+        assert!(text.contains("- symbol `emitThinking` from"), "{text}");
+        assert_eq!(text.matches("review reasons:").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn should_not_merge_symbols_from_different_sources() {
+        let items = vec![
+            advice_symbol("one", SymbolKind::Symbol, "src/a/x.ts"),
+            advice_symbol("two", SymbolKind::Symbol, "src/a/y.ts"),
+        ];
+
+        let text = advice_text(items, RenderOptions::default());
+
+        assert!(!flat(&text).contains("- 2 symbols"), "{text}");
+    }
+
+    #[test]
+    fn should_not_merge_symbols_whose_verbose_evidence_differs() {
+        let mut first = advice_symbol("one", SymbolKind::Symbol, "src/a/x.ts");
+        let mut second = advice_symbol("two", SymbolKind::Symbol, "src/a/x.ts");
+        first.assessments = vec![assessment_for(0.2)];
+        second.assessments = vec![assessment_for(0.3)];
+        let verbose = RenderOptions {
+            verbose: true,
+            full: false,
+        };
+
+        let split = advice_text(vec![first.clone(), second], verbose);
+        let same = advice_text(vec![first.clone(), first], verbose);
+
+        assert!(!flat(&split).contains("- 2 symbols"), "{split}");
+        assert!(split.contains("margin 0.20"), "{split}");
+        assert!(split.contains("margin 0.30"), "{split}");
+        assert!(
+            flat(&same).contains("- 2 symbols `one`, `one` from"),
+            "{same}"
+        );
+        assert_eq!(same.matches("margin 0.20").count(), 1, "{same}");
+    }
+
+    #[test]
+    fn should_print_a_lone_symbol_exactly_as_before() {
+        let items = vec![advice_symbol("solo", SymbolKind::Symbol, "src/a/x.ts")];
+
+        let text = advice_text(items, RenderOptions::default());
+
+        assert!(
+            flat(&text).contains("- symbol `solo` from `src/a/x.ts` → `src/a.ts` · supporting [anchored] · qualified [] · absent [] · conflicts [] review reasons: destination evidence is below the configured minimum"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn should_say_types_only_when_every_member_is_a_type() {
+        let types = advice_text(
+            vec![
+                advice_symbol("A", SymbolKind::Type, "src/a/x.ts"),
+                advice_symbol("B", SymbolKind::Type, "src/a/x.ts"),
+            ],
+            RenderOptions::default(),
+        );
+        let mixed = advice_text(
+            vec![
+                advice_symbol("A", SymbolKind::Type, "src/a/x.ts"),
+                advice_symbol("b", SymbolKind::Symbol, "src/a/x.ts"),
+            ],
+            RenderOptions::default(),
+        );
+
+        assert!(types.contains("- 2 types `A`, `B` from"), "{types}");
+        assert!(mixed.contains("- 2 symbols `A`, `b` from"), "{mixed}");
+    }
+
+    #[test]
+    fn should_wrap_a_long_merged_name_list() {
+        let items = (0..12)
+            .map(|index| {
+                advice_symbol(
+                    &format!("someLongSymbolName{index}"),
+                    SymbolKind::Symbol,
+                    "src/a/x.ts",
+                )
+            })
+            .collect();
+
+        let text = advice_text(items, full());
+
+        assert!(
+            text.contains("- 12 symbols `someLongSymbolName0`"),
+            "{text}"
+        );
+        assert!(
+            text.lines().all(|line| line.chars().count() <= 99),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn should_count_groups_for_the_cap_and_items_for_the_more_line() {
+        let mut items = Vec::new();
+        for group in 0..7 {
+            for member in 0..3 {
+                items.push(advice_symbol(
+                    &format!("g{group}m{member}"),
+                    SymbolKind::Symbol,
+                    &format!("src/a/{group}.ts"),
+                ));
+            }
+        }
+
+        let capped = advice_text(items.clone(), RenderOptions::default());
+        let everything = advice_text(items, full());
+
+        assert!(capped.contains(" Review candidate (21):"), "{capped}");
+        assert_eq!(capped.matches("- 3 symbols").count(), 5, "{capped}");
+        assert_eq!(
+            more_lines(&capped),
+            vec!["   … 6 more — rerun with --full to see all"]
+        );
+        assert_eq!(everything.matches("- 3 symbols").count(), 7);
+        assert_eq!(more_lines(&everything).len(), 0);
+    }
+
+    #[test]
+    fn should_rank_groups_with_the_item_ranking() {
+        let mut strong = advice_symbol("strong", SymbolKind::Symbol, "src/a/strong.ts");
+        strong.supporting_profiles = vec![
+            unlace_engine::ProfileName::Anchored,
+            unlace_engine::ProfileName::Greenfield,
+        ];
+        // `strong` comes last, so only the ranking can lift it into the shown five.
+        let mut items: Vec<_> = (0..5)
+            .map(|index| {
+                advice_symbol(
+                    &format!("filler{index}"),
+                    SymbolKind::Symbol,
+                    &format!("src/a/filler{index}.ts"),
+                )
+            })
+            .collect();
+        items.push(strong);
+
+        let text = advice_text(items, RenderOptions::default());
+
+        assert!(text.contains("`strong`"), "{text}");
+        assert!(!text.contains("`filler4`"), "{text}");
+        assert_eq!(
+            more_lines(&text),
+            vec!["   … 1 more — rerun with --full to see all"]
+        );
+    }
+
+    #[test]
+    fn should_cap_proposed_moves_per_candidate() -> Result<(), &'static str> {
+        let mut result = result_with_candidate();
+        let candidate = anchored_candidate(&mut result).ok_or("candidate")?;
+        candidate.delta_narration.clear();
+        candidate.symbol_moves = (0..7)
+            .map(|index| SymbolMove {
+                display: None,
+                symbol: format!("Thing{index}"),
+                kind: SymbolKind::Type,
+                from_path: "origin/options.ts".to_owned(),
+                to_path: "shared/owner.ts".to_owned(),
+                delta: -0.1,
+                broken_imports: 1,
+            })
+            .collect();
+
+        let capped = summary(&result, RenderOptions::default());
+        let everything = summary(&result, full());
+
+        assert_eq!(capped.matches("- Move type").count(), 5, "{capped}");
+        assert_eq!(
+            more_lines(&capped),
+            vec!["    … 2 more — rerun with --full to see all"]
+        );
+        assert_eq!(everything.matches("- Move type").count(), 7);
+        Ok(())
+    }
+
+    #[test]
+    fn should_cap_the_violation_table_and_keep_the_disclaimer() {
+        let findings = findings_at(7, Severity::Violation);
+        let mut capped = Vec::new();
+        let mut everything = Vec::new();
+
+        write_violation_table(&findings, RenderOptions::default(), &mut capped).unwrap_or_default();
+        write_violation_table(&findings, full(), &mut everything).unwrap_or_default();
+
+        let capped = String::from_utf8(capped).unwrap_or_default();
+        let everything = String::from_utf8(everything).unwrap_or_default();
+        assert_eq!(
+            capped.matches("capacity [violation]").count(),
+            5,
+            "{capped}"
+        );
+        assert_eq!(
+            more_lines(&capped),
+            vec!["… 2 more — rerun with --full to see all"]
+        );
+        assert!(capped.ends_with(&format!("{ADVICE_DISCLAIMER}\n")));
+        assert_eq!(everything.matches("capacity [violation]").count(), 7);
+        assert_eq!(more_lines(&everything).len(), 0);
+    }
+
+    /// A result whose one candidate narrates a single group of `count` files.
+    fn result_with_one_move_group(count: usize) -> AnalyzeResult {
+        let mut result = result_with_candidate();
+        let paths: Vec<String> = (0..count).map(|index| format!("f{index}.ts")).collect();
+        let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+        if let Some(candidate) = result
+            .profiles
+            .anchored
+            .as_mut()
+            .and_then(|mode| mode.candidates.first_mut())
+        {
+            candidate.delta_narration = vec![move_of(
+                MoveKind::Merge,
+                &paths,
+                "src/old",
+                "src/new",
+                MoveReason::Clustering,
+            )];
+        }
+        result
+    }
+
+    #[test]
+    fn should_cap_proposed_moves_by_line_not_by_group() {
+        let result = result_with_one_move_group(8);
+
+        let text = summary(&result, RenderOptions::default());
+
+        let lines: Vec<&str> = text.lines().collect();
+        let first = lines.iter().position(|line| line.contains("- Move file"));
+        assert_eq!(text.matches("- Move file").count(), 5, "{text}");
+        let first = first.unwrap_or_default();
+        assert!(
+            lines
+                .get(first + 5)
+                .is_some_and(|line| line.trim_start().starts_with("Why:")),
+            "{text}"
+        );
+        assert_eq!(text.matches("Why:").count(), 1, "{text}");
+        assert_eq!(
+            lines.get(first + 6),
+            Some(&"    … 3 more — rerun with --full to see all"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn should_print_a_move_groups_reason_once_after_its_last_line_with_full() {
+        let result = result_with_one_move_group(8);
+
+        let text = summary(&result, full());
+
+        assert_eq!(text.matches("- Move file").count(), 8, "{text}");
+        assert_eq!(text.matches("Why:").count(), 1, "{text}");
+        assert_eq!(more_lines(&text).len(), 0, "{text}");
+    }
+
+    #[test]
+    fn should_show_no_more_line_for_exactly_five_move_lines() {
+        let result = result_with_one_move_group(5);
+
+        let text = summary(&result, RenderOptions::default());
+
+        assert_eq!(text.matches("- Move file").count(), 5, "{text}");
+        assert_eq!(more_lines(&text).len(), 0, "{text}");
+    }
+
+    #[test]
+    fn should_never_cap_json() {
+        let result = result_with(findings_at(8, Severity::Violation));
+        let mut json = Vec::new();
+
+        render_with_options(
+            &result,
+            Format::Json,
+            "fixture",
+            RenderOptions::default(),
+            &mut json,
+        )
+        .unwrap_or_default();
+
+        let json = String::from_utf8(json).unwrap_or_default();
+        assert_eq!(json.matches("\"kind\":\"capacity\"").count(), 8);
+    }
+
+    /// Builds a type relocation from `origin/options.ts` to `shared/owner.ts`.
+    fn type_move() -> SymbolMove {
+        SymbolMove {
+            display: None,
+            symbol: "Options".to_owned(),
+            kind: SymbolKind::Type,
+            from_path: "origin/options.ts".to_owned(),
+            to_path: "shared/owner.ts".to_owned(),
+            delta: -0.1,
+            broken_imports: 1,
+        }
+    }
+
+    /// Builds a split of root-level `a.ts` into the root, followed by its test.
+    fn rooted_split_with_mirror() -> Move {
+        Move {
+            mirrors: vec![unlace_engine::MirrorMove {
+                source_path: "a.ts".to_owned(),
+                path: "tests/a.test.ts".to_owned(),
+                from: "tests".to_owned(),
+                to: "spec".to_owned(),
+            }],
+            ..move_of(MoveKind::Split, &["a.ts"], "", "", MoveReason::Clustering)
+        }
+    }
+
+    /// Returns the single candidate of `result`'s anchored profile.
+    fn anchored_candidate(result: &mut AnalyzeResult) -> Option<&mut Candidate> {
+        result.profiles.anchored.as_mut()?.candidates.first_mut()
+    }
+
+    #[test]
+    fn should_surface_a_failed_write_at_every_call_of_each_analyze_face() {
+        let mut result = result_with_candidate();
+        if let Some(candidate) = anchored_candidate(&mut result) {
+            candidate.delta_narration = vec![rooted_split_with_mirror()];
+            candidate.symbol_moves = vec![type_move()];
+        }
+        let options = RenderOptions {
+            verbose: true,
+            full: false,
+        };
+
+        for format in [Format::Summary, Format::Json] {
+            let mut full = Vec::new();
+            let rendered = render_with_options(&result, format, "fixture", options, &mut full);
+            let swallowed = swallowed_write_faults(&full, |sink| {
+                render_with_options(&result, format, "fixture", options, sink)
+            });
+
+            assert!(rendered.is_ok(), "{format:?}");
+            assert_eq!(swallowed, 0, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn should_render_a_nested_tree_and_surface_a_failed_write_at_every_call() {
+        let tree = ContainerNode {
+            name: "src".to_owned(),
+            level: Level::Folder,
+            children: Some(vec![
+                file_node("a.ts", 2),
+                ContainerNode {
+                    production_sloc: None,
+                    ..file_node("b.ts", 0)
+                },
+            ]),
+            symbols: None,
+            production_sloc: None,
+        };
+        let mut full = Vec::new();
+
+        let rendered = render_tree(&tree, true, None, &mut full);
+
+        assert!(rendered.is_ok());
+        assert_eq!(
+            String::from_utf8_lossy(&full),
+            format!(
+                "src [folder]\n  a.ts [file] 2 sloc\n    - thing (file)\n  b.ts [file]\n    - thing (file)\n{ADVICE_DISCLAIMER}\n"
+            )
+        );
+        assert_eq!(
+            swallowed_write_faults(&full, |sink| render_tree(&tree, true, None, sink)),
+            0
+        );
+
+        let mut cut = Vec::new();
+        let cut_rendered = render_tree(&tree, false, Some(0), &mut cut);
+
+        assert!(cut_rendered.is_ok());
+        assert_eq!(
+            String::from_utf8_lossy(&cut),
+            format!("src [folder]\n{ADVICE_DISCLAIMER}\n")
+        );
+        assert_eq!(
+            swallowed_write_faults(&cut, |sink| render_tree(&tree, false, Some(0), sink)),
+            0
+        );
+    }
+
+    #[test]
+    fn should_number_root_and_mirrored_steps_in_the_diff_face() -> Result<(), &'static str> {
+        let mut result = result_with_candidate();
+        let mut candidate = anchored_candidate(&mut result).ok_or("candidate")?.clone();
+        candidate.delta_narration = vec![rooted_split_with_mirror()];
+        candidate.symbol_moves = vec![type_move()];
+        let mut full = Vec::new();
+
+        let rendered = render_diff(&candidate, &mut full);
+
+        assert!(rendered.is_ok());
+        let text = String::from_utf8_lossy(&full).into_owned();
+        assert!(
+            text.starts_with(
+                "moves (1 group(s), 2 file(s); gain +1.2500):\n\
+                 split — regrouped by clustering\n\
+                 \x20 1. a.ts [(root) → (root)]\n\
+                 \x20 2. tests/a.test.ts [tests → spec] (mirrored test for a.ts)\n\
+                 - move type `Options` from `origin/options.ts` to `shared/owner.ts` \
+                 (delta -0.1000, 1 import(s) to re-point)\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(
+            swallowed_write_faults(&full, |sink| render_diff(&candidate, sink)),
+            0
+        );
+
+        candidate.delta_narration.clear();
+        candidate.symbol_moves.clear();
+        let mut none = Vec::new();
+        let none_rendered = render_diff(&candidate, &mut none);
+
+        assert!(none_rendered.is_ok());
+        assert_eq!(
+            String::from_utf8_lossy(&none),
+            format!("no moves\n{ADVICE_DISCLAIMER}\n")
+        );
+        assert_eq!(
+            swallowed_write_faults(&none, |sink| render_diff(&candidate, sink)),
+            0
+        );
+
+        candidate.symbol_moves = vec![type_move()];
+        let mut symbols_only = Vec::new();
+        let symbols_rendered = render_diff(&candidate, &mut symbols_only);
+
+        assert!(symbols_rendered.is_ok());
+        assert!(
+            String::from_utf8_lossy(&symbols_only)
+                .starts_with("symbol moves (1 symbol(s); gain +1.2500):\n"),
+        );
+        assert_eq!(
+            swallowed_write_faults(&symbols_only, |sink| render_diff(&candidate, sink)),
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn should_tag_every_violation_class_in_the_table() {
+        let violations: Vec<Violation> = [
+            ViolationKind::Polarity,
+            ViolationKind::Visibility,
+            ViolationKind::TestOnly,
+        ]
+        .into_iter()
+        .map(|kind| Violation {
+            kind,
+            ..capacity_violation("x")
+        })
+        .collect();
+        let mut out = Vec::new();
+
+        let written = write_violation_table(&violations, RenderOptions::default(), &mut out);
+
+        assert!(written.is_ok());
+        let text = String::from_utf8_lossy(&out).into_owned();
+        let tags: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.split_once(" [violation] "))
+            .map(|(tag, _)| tag)
+            .collect();
+        assert_eq!(tags, vec!["polarity", "visibility", "testOnly"]);
+    }
+
+    #[test]
+    fn should_surface_a_failed_write_at_every_call_of_a_capped_or_empty_table() {
+        for (count, marker) in [
+            (7, "\n… 2 more — rerun with --full"),
+            (3, "\ncapacity [violation] c2 :: c2 over cap\nAll findings"),
+            (0, "no violations\n"),
+        ] {
+            let violations = findings_at(count, Severity::Violation);
+            let table = |sink: &mut FaultySink| {
+                write_violation_table(&violations, RenderOptions::default(), sink)
+            };
+            let mut full = Vec::new();
+
+            let written = write_violation_table(&violations, RenderOptions::default(), &mut full);
+
+            assert!(written.is_ok());
+            assert!(String::from_utf8_lossy(&full).contains(marker), "{count}");
+            assert_eq!(swallowed_write_faults(&full, table), 0, "{count}");
+        }
+    }
+
+    #[test]
+    fn should_describe_an_undetailed_cycle_by_size_and_price_a_heuristic_cut() {
+        let bare = Violation {
+            detail: String::new(),
+            break_suggestions: Some(Vec::new()),
+            ..cycle()
+        };
+        let heuristic = Violation {
+            break_suggestions: Some(vec![EdgeBreak {
+                source: "a".to_owned(),
+                target: "b".to_owned(),
+                weight: 2.0,
+                exact: false,
+                same_file: true,
+            }]),
+            ..bare.clone()
+        };
+
+        assert_eq!(cycle_finding_text(&bare), "`a`/`b` — 2-symbol cycle");
+        assert_eq!(
+            cycle_finding_text(&heuristic),
+            "`a`/`b` — 2-symbol cycle; to split it, break `a` -> `b` (w=2.0, heuristic, same file)"
+        );
+    }
+
+    #[test]
+    fn should_say_no_candidates_were_produced_when_no_profile_ran() {
+        let mut result = result_with(Vec::new());
+        result.profiles = Modes::default();
+
+        let lines = report_lines(&result, "fixture");
+
+        let candidates = lines
+            .iter()
+            .position(|line| line == "Candidate layouts")
+            .and_then(|index| lines.get(index + 1));
+        assert_eq!(
+            candidates.map(String::as_str),
+            Some("No candidates were produced.")
+        );
+    }
+
+    #[test]
+    fn should_state_each_profile_standing_beside_its_candidates() {
+        let mut result = result_with_candidate();
+        let mut greenfield = result.profiles.anchored.clone();
+        if let Some(mode) = result.profiles.anchored.as_mut() {
+            mode.current.standing = CurrentStanding::Optimal;
+        }
+        if let Some(mode) = greenfield.as_mut() {
+            mode.candidates.clear();
+        }
+        result.profiles.greenfield = greenfield;
+
+        let text = summary(&result, RenderOptions::default());
+
+        assert!(
+            text.contains("Current layout is already optimal under this profile's search."),
+            "{text}"
+        );
+        assert!(
+            text.contains("greenfield — 0 candidate(s)\nBaseline score: 1.5000\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("converged.\nNo candidates were produced.\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn should_count_the_broken_caps_of_an_infeasible_empty_profile() {
+        let mut result = result_with(Vec::new());
+        if let Some(mode) = result.profiles.anchored.as_mut() {
+            mode.current.standing = CurrentStanding::Infeasible;
+            mode.current.capacity_breaks = 2;
+        }
+
+        let text = summary(&result, RenderOptions::default());
+
+        assert!(
+            text.contains(
+                "anchored — 0 candidates (baseline 1.5000; current layout breaks 2 cap(s))"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn should_list_mirrored_tests_and_captions_of_fileless_groups_as_moves() {
+        let mut result = result_with_candidate();
+        if let Some(candidate) = anchored_candidate(&mut result) {
+            candidate.delta_narration = vec![
+                move_of(
+                    MoveKind::Move,
+                    &[],
+                    "old",
+                    "named",
+                    MoveReason::NamingCohesion { cohesion: 0.8 },
+                ),
+                Move {
+                    mirrors: vec![unlace_engine::MirrorMove {
+                        source_path: "old/a.ts".to_owned(),
+                        path: "tests/a.test.ts".to_owned(),
+                        from: "tests".to_owned(),
+                        to: "spec".to_owned(),
+                    }],
+                    ..move_of(
+                        MoveKind::Move,
+                        &["old/a.ts", "new/b.ts"],
+                        "old",
+                        "new",
+                        MoveReason::Clustering,
+                    )
+                },
+            ];
+            candidate.conditional_splits = vec![unlace_engine::ConditionalSplit {
+                scc: vec!["x".to_owned(), "y".to_owned()],
+                preconditions: vec![EdgeBreak {
+                    source: "x".to_owned(),
+                    target: "y".to_owned(),
+                    weight: 1.0,
+                    exact: false,
+                    same_file: false,
+                }],
+                resulting_files: 2,
+            }];
+        }
+
+        let lines = report_lines(&result, "fixture");
+        let text = lines.join("\n");
+
+        for expected in [
+            "      Why: clusters files whose names fit their destination.",
+            "    - Move file `old/a.ts` → `new/a.ts`",
+            "    - Move file `new/b.ts` → `new/b.ts`",
+            "    - Move mirrored test file `tests/a.test.ts` → `spec/a.test.ts`; follows `old/a.ts`",
+            "    `x` → `y` (weight 1.0000, heuristic)",
+        ] {
+            assert!(
+                lines.iter().any(|line| line == expected),
+                "{expected}\n{text}"
+            );
+        }
+        let (_, trees) = text.split_once("  Before").unwrap_or_default();
+        assert!(
+            trees.contains("a.test.ts *"),
+            "the mirror is affected: {trees}"
+        );
+        assert!(
+            !trees.contains("b.ts"),
+            "a file already in its destination is unaffected: {trees}"
+        );
+    }
+
+    #[test]
+    fn should_name_fileless_file_advice_and_explain_every_review_reason() {
+        let mut item = advice_symbol("Unused", SymbolKind::Symbol, "src/x.ts");
+        item.proposal = unlace_engine::RelocationProposal::File {
+            relocation: move_of(MoveKind::Move, &[], "src", "lib", MoveReason::Clustering),
+        };
+        item.review_reasons = vec![
+            unlace_engine::ReviewReason::ConflictingDestinations,
+            unlace_engine::ReviewReason::WeakStructuralEvidence,
+            unlace_engine::ReviewReason::WeakAmbiguityMargin,
+            unlace_engine::ReviewReason::NoMajoritySupport,
+        ];
+
+        let text = flat(&advice_text(vec![item], RenderOptions::default()));
+
+        assert!(text.contains("- file `(unknown)` → `src/a.ts`"), "{text}");
+        assert!(
+            text.contains(
+                "review reasons: profiles selected different destinations, structural evidence \
+                 is insufficient, the destination is not \
+                 sufficiently stronger than the best alternative, no strict majority of executed \
+                 profiles provides qualifying support for this destination"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn should_not_mistake_a_connector_inside_prose_for_tree_geometry() {
+        let mut result = result_with(Vec::new());
+        let tail = "y".repeat(120);
+        result.snapshot_hash = format!("x├── {tail}");
+
+        let lines = report_lines(&result, "fixture");
+
+        let start = lines
+            .iter()
+            .position(|line| line.starts_with("Snapshot "))
+            .unwrap_or_default();
+        assert_eq!(
+            lines.get(start..start + 3),
+            Some(
+                [
+                    "Snapshot `x├──".to_owned(),
+                    "y".repeat(100),
+                    format!("{}`", "y".repeat(20)),
+                ]
+                .as_slice()
+            )
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/support/combined_package_moves.rs"]
+mod combined_package_moves;
