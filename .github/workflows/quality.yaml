@@ -1,0 +1,74 @@
+name: Quality Checks
+
+on:
+  pull_request: # draft PRs are skipped by the job condition below
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  push: # every commit landing on main gets its own checks
+    branches:
+      - main
+  workflow_dispatch: # manual dispatch runs the full suite
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Verify
+    # skip draft PRs; ready_for_review triggers the run once the draft is promoted
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    # use the organization's small runner group, with a GitHub-hosted fallback
+    runs-on: ${{ vars.ACTION_INSTANCE_GROUP_SMALL || 'ubuntu-latest' }}
+    steps:
+      - name: Code Checkout
+        uses: actions/checkout@v7
+      - name: Setup Rust Toolchain
+        # installs the channel and components pinned in rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Setup Build Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Lint Test
+        # read-only checks, so they run first and fail fast; unlike the TypeScript
+        # template nothing here rewrites files that could widen a later step's scope
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Unit Test
+        # inline #[cfg(test)] modules in each crate's src, plus doctests
+        run: |
+          cargo test --workspace --locked --lib --bins
+          cargo test --workspace --locked --doc
+      - name: Integration Test
+        # crate-level tests/: adapter fixtures, engine behaviour, eval harness, CLI e2e
+        run: cargo test --workspace --locked --test '*'
+  coverage:
+    name: Coverage
+    # runs beside Verify; same draft-PR skip and runner choice
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ${{ vars.ACTION_INSTANCE_GROUP_SMALL || 'ubuntu-latest' }}
+    steps:
+      - name: Code Checkout
+        uses: actions/checkout@v7
+      - name: Setup Rust Toolchain
+        # the pinned toolchain plus the LLVM tools cargo-llvm-cov merges profiles with
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools-preview
+      - name: Setup Build Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Setup cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Coverage Test
+        # every production line, function and region must run; test code and lines
+        # waived with `// coverage: unreachable, <reason>` are left out (see the script)
+        run: |
+          cargo llvm-cov --workspace --locked --no-report
+          cargo llvm-cov report --json --output-path coverage.json
+          cargo llvm-cov report --lcov --output-path coverage.lcov
+          python3 scripts/coverage-gate.py coverage.json coverage.lcov .
