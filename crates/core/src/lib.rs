@@ -22,5 +22,6 @@ pub mod graph;
 pub mod layer;
 pub mod score;
 pub mod shatter;
+pub mod visibility;
 
 pub use unlace_ir as ir;

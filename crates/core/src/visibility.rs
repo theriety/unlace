@@ -1,0 +1,882 @@
+//! LCA-based visibility derivation: a symbol's export scope is the lowest
+//! container ancestor covering all its consumers, widened by transitive type
+//! exposure.
+//!
+//! Visibility is derived, never declared. The lowest common ancestor of every
+//! consumer's container is the narrowest scope at which a symbol must be visible;
+//! a symbol nobody consumes stays private to its own file. Binary-lifting LCA
+//! tables give `O(log V)` queries after an `O(V log V)` build, so the whole pass
+//! costs `O(E log V)` — one query per consumer edge (FR-8).
+//!
+//! Type exposure then widens the picture monotonically: the parameter and return
+//! types named in an exported function's signature are reachable by every
+//! consumer of that function, even when no internal edge says so. Widening each
+//! such type up to at least its function's scope is monotone, so the fixpoint
+//! terminates. Finally, any declared visibility wider than the derived scope
+//! becomes a [`Finding`] — the signal that drives barrel contents, since a
+//! folder or domain barrel exports exactly the symbols whose derived scope
+//! reaches that level.
+
+use unlace_ir::{ContainerId, ContainerTree, Edge, EdgeKind, Node, NodeId, NodeKind, ScopeLevel};
+
+mod lca;
+mod prepared;
+
+use lca::LcaTable;
+pub use prepared::PreparedVisibility;
+
+/// The derived export scope of a single symbol, expressed both as the container
+/// that owns the scope and the level that container sits at.
+///
+/// `container` is the lowest common ancestor of every consumer's container, or
+/// the symbol's own file when nobody consumes it. `level` is that container's
+/// [`ScopeLevel`], the value compared against the declared visibility when
+/// emitting findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedScope {
+    /// The node whose scope this is.
+    pub node: NodeId,
+    /// The container at which the symbol must be visible.
+    pub container: ContainerId,
+    /// The level of `container`.
+    pub level: ScopeLevel,
+}
+
+/// A symbol whose declared visibility is wider than its derived scope.
+///
+/// The pair of levels lets the report narrate the narrowing ("exported at
+/// package level, needed only at folder level"); the node names the offending
+/// symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Finding {
+    /// The over-exported node.
+    pub node: NodeId,
+    /// The visibility level declared in source.
+    pub declared: ScopeLevel,
+    /// The level the symbol is actually needed at.
+    pub derived: ScopeLevel,
+}
+
+/// The outcome of visibility derivation: every node's derived scope plus the
+/// over-export findings.
+///
+/// `scopes` is ordered by ascending [`NodeId`]; `findings` is ordered the same
+/// way, so both are deterministic across runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibilityResult {
+    /// The derived scope of every node, by ascending id.
+    pub scopes: Vec<DerivedScope>,
+    /// Symbols whose declared visibility is wider than derived, by ascending id.
+    pub findings: Vec<Finding>,
+}
+
+/// Derives each symbol's minimal export scope and flags declared visibility that
+/// is wider than derived.
+///
+/// The derivation has three steps:
+///
+/// 1. binary-lifting LCA tables are built over `tree` (`O(V log V)` build,
+///    `O(log V)` per query);
+/// 2. each node's scope is the LCA of its consumers' containers — a symbol with
+///    no consumers stays private to its own file;
+/// 3. the transitive type-exposure fixpoint widens each signature type up to at
+///    least its exported function's scope, iterating to a monotone fixpoint.
+///
+/// A declared visibility wider than the derived scope yields a [`Finding`].
+///
+/// `nodes` carries the node→container map and declared visibility that `edges`
+/// alone cannot supply; nodes are addressed by their [`NodeId`].
+#[must_use]
+pub fn derive_visibility(tree: &ContainerTree, nodes: &[Node], edges: &[Edge]) -> VisibilityResult {
+    let lca = LcaTable::build(tree);
+    let by_id = NodeIndex::build(nodes);
+
+    let mut scope = initial_scopes(&by_id, edges, &lca);
+    widen_by_type_exposure(&by_id, edges, &lca, &mut scope);
+
+    let scopes = collect_scopes(&by_id, &scope, &lca);
+    let findings = collect_findings(&by_id, &scopes);
+
+    VisibilityResult { scopes, findings }
+}
+
+/// A node lookup keyed by raw [`NodeId`] value, plus the nodes in id order.
+///
+/// `slot` maps a node id to its index in `ordered`; ids absent from the input
+/// map to `None`. `ordered` keeps the nodes sorted by ascending id so derived
+/// output is deterministic.
+struct NodeIndex<'nodes> {
+    /// Nodes sorted by ascending id.
+    ordered: Vec<&'nodes Node>,
+    /// Index into `ordered` for each raw node id, `None` when absent.
+    slot: Vec<Option<usize>>,
+}
+
+impl<'nodes> NodeIndex<'nodes> {
+    /// Builds the index from `nodes`, sorting by ascending id.
+    fn build(nodes: &'nodes [Node]) -> Self {
+        let mut ordered: Vec<&Node> = nodes.iter().collect();
+        ordered.sort_by_key(|node| node.id.0);
+
+        let max_id = ordered.last().map_or(0, |node| node.id.0 as usize);
+        let mut slot = vec![None; max_id.saturating_add(1)];
+        for (index, node) in ordered.iter().enumerate() {
+            slot.get_mut(node.id.0 as usize)
+                .into_iter()
+                .for_each(|cell| *cell = Some(index));
+        }
+
+        Self { ordered, slot }
+    }
+
+    /// Returns the node with raw id `id`, or `None` when absent.
+    fn get(&self, id: u32) -> Option<&'nodes Node> {
+        self.slot
+            .get(id as usize)
+            .copied()
+            .flatten()
+            .and_then(|index| self.ordered.get(index).copied())
+    }
+}
+
+/// Computes each consumed node's initial scope: the LCA of its own container and
+/// every consumer's container.
+///
+/// A consumer of `s` is the source of any edge whose target is `s`. The symbol's
+/// own container seeds the LCA, so a symbol consumed only within its own file
+/// stays file-private while one consumed from elsewhere widens to the common
+/// ancestor of its declaration and that consumer. Nodes with no consumers never
+/// appear here and default to their own file later.
+fn initial_scopes(by_id: &NodeIndex, edges: &[Edge], lca: &LcaTable) -> Vec<Option<ContainerId>> {
+    let mut scope: Vec<Option<ContainerId>> = vec![None; by_id.slot.len()];
+
+    for edge in edges {
+        // `scope` spans every indexed id, so a resolved target always has a cell.
+        let (Some(consumer), Some(target), Some(cell)) = (
+            by_id.get(edge.source.0),
+            by_id.get(edge.target.0),
+            scope.get_mut(edge.target.0 as usize),
+        ) else {
+            continue;
+        };
+        let consumer_container = consumer.container;
+        // seed an unseen symbol with its own container, then fold in the
+        // consumer so the scope is the LCA of declaration and consumption.
+        let seed = cell.unwrap_or(target.container);
+        *cell = Some(lca.lca(seed, consumer_container));
+    }
+
+    scope
+}
+
+/// Widens signature types up to their exported functions' scopes until no scope
+/// changes.
+///
+/// "Exported" means a derived scope above file level (something outside the
+/// file consumes it). A signature type of such a function is any `Type` node
+/// reached by a [`EdgeKind::TypeReference`] or [`EdgeKind::Inheritance`] edge
+/// from the function. Each widening can only raise a type's scope toward the
+/// root, so the process is monotone and terminates.
+fn widen_by_type_exposure(
+    by_id: &NodeIndex,
+    edges: &[Edge],
+    lca: &LcaTable,
+    scope: &mut [Option<ContainerId>],
+) {
+    loop {
+        let mut changed = false;
+
+        for edge in edges {
+            if !is_signature_edge(edge.kind) {
+                continue;
+            }
+            let (Some(function), Some(referenced)) =
+                (by_id.get(edge.source.0), by_id.get(edge.target.0))
+            else {
+                continue;
+            };
+            if referenced.kind != NodeKind::Type {
+                continue;
+            }
+
+            let function_scope = scope
+                .get(function.id.0 as usize)
+                .copied()
+                .flatten()
+                .unwrap_or(function.container);
+            // a function only exposes its signature when itself exported above
+            // its own file; a file-private function leaks nothing.
+            if lca.level(function_scope) <= ScopeLevel::File {
+                continue;
+            }
+
+            let current = scope
+                .get(referenced.id.0 as usize)
+                .copied()
+                .flatten()
+                .unwrap_or(referenced.container);
+            let widened = lca.lca(current, function_scope);
+            if widened != current
+                && let Some(cell) = scope.get_mut(referenced.id.0 as usize)
+            {
+                *cell = Some(widened);
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Returns whether `kind` places its target in a function signature position.
+fn is_signature_edge(kind: EdgeKind) -> bool {
+    matches!(kind, EdgeKind::TypeReference | EdgeKind::Inheritance)
+}
+
+/// Materializes the per-node [`DerivedScope`] list in ascending id order.
+///
+/// A node absent from `scope` had no consumers and stays private to its own
+/// file.
+fn collect_scopes(
+    by_id: &NodeIndex,
+    scope: &[Option<ContainerId>],
+    lca: &LcaTable,
+) -> Vec<DerivedScope> {
+    by_id
+        .ordered
+        .iter()
+        .map(|node| {
+            let container = scope
+                .get(node.id.0 as usize)
+                .copied()
+                .flatten()
+                .unwrap_or(node.container);
+            DerivedScope {
+                node: node.id,
+                container,
+                level: lca.level(container),
+            }
+        })
+        .collect()
+}
+
+/// Flags every node whose declared visibility sits strictly above its derived
+/// scope level.
+///
+/// A re-export node ([`Node::re_export`], ADR-20) is exempt: it declares no
+/// entity of its own but publishes another one, and flattening has already
+/// redirected its consumers to the original, so its derived scope never
+/// reflects the export surface it exists to provide. The adapter's flag, not a
+/// resolved re-export edge, decides — so an alias whose target is not a node
+/// (a crate root, an external module) is exempt too.
+///
+/// A snapshot upgraded from schema 2 is the exception: its flag is derived from
+/// `ReExport` edges, and a crate-root alias (`pub use crate as alias`) has no
+/// such edge, so that alias stays unflagged there until the IR is regenerated.
+///
+/// A public-API node ([`Node::public_api`], ADR-25) is exempt as well: its users
+/// live outside the analysed tree, so no derived scope can tell it is too wide.
+fn collect_findings(by_id: &NodeIndex, scopes: &[DerivedScope]) -> Vec<Finding> {
+    scopes
+        .iter()
+        .filter_map(|scope| {
+            by_id
+                .get(scope.node.0)
+                .filter(|node| !exempt_from_advice(node) && node.visibility > scope.level)
+                .map(|node| Finding {
+                    node: scope.node,
+                    declared: node.visibility,
+                    derived: scope.level,
+                })
+        })
+        .collect()
+}
+
+/// Whether visibility advice must never narrow `node`: a re-export publishes
+/// another entity (ADR-20), a public-API node is used outside the analysed
+/// tree, and an advice-exempt node may be used where the adapter cannot see
+/// (ADR-25). Every path that can emit a visibility finding asks this one
+/// predicate.
+#[must_use]
+pub const fn exempt_from_advice(node: &Node) -> bool {
+    node.re_export || node.public_api || node.advice_exempt
+}
+
+#[cfg(test)]
+mod tests {
+    use smol_str::SmolStr;
+    use unlace_ir::{Container, Hardness, NodeKind, Polarity};
+
+    use super::*;
+
+    /// Builds a container at `id` and `level` with optional `parent`.
+    fn container(id: u32, level: ScopeLevel, parent: Option<u32>) -> Container {
+        Container {
+            id: ContainerId(id),
+            name: SmolStr::new(format!("c{id}")),
+            level,
+            parent: parent.map(ContainerId),
+            synthetic: false,
+            label_keyed: false,
+        }
+    }
+
+    /// Builds a node owned by `container` with the given `kind` and declared
+    /// `visibility`.
+    fn node(id: u32, container: u32, kind: NodeKind, visibility: ScopeLevel) -> Node {
+        Node {
+            public_api: false,
+            advice_exempt: false,
+            id: NodeId(id),
+            name: SmolStr::new(format!("n{id}")),
+            kind,
+            polarity: Polarity::Production,
+            container: ContainerId(container),
+            visibility,
+            effective_size: 1,
+            re_export: false,
+            display_name: None,
+            test_source: false,
+            owner: None,
+        }
+    }
+
+    /// Builds a `source -> target` edge of `kind`.
+    fn edge(source: u32, target: u32, kind: EdgeKind) -> Edge {
+        Edge {
+            source: NodeId(source),
+            target: NodeId(target),
+            kind,
+            hardness: Hardness::Soft,
+            confidence: 1.0,
+        }
+    }
+
+    /// A small tree: package 0 over folders 1 and 2, each over one file (3, 4).
+    fn sample_tree() -> ContainerTree {
+        ContainerTree::new(vec![
+            container(0, ScopeLevel::Package, None),
+            container(1, ScopeLevel::Folder, Some(0)),
+            container(2, ScopeLevel::Folder, Some(0)),
+            container(3, ScopeLevel::File, Some(1)),
+            container(4, ScopeLevel::File, Some(2)),
+        ])
+    }
+
+    #[test]
+    fn should_keep_an_unconsumed_symbol_file_private() {
+        let tree = sample_tree();
+        let nodes = vec![node(0, 3, NodeKind::Symbol, ScopeLevel::File)];
+
+        let result = derive_visibility(&tree, &nodes, &[]);
+
+        assert_eq!(
+            result.scopes,
+            vec![DerivedScope {
+                node: NodeId(0),
+                container: ContainerId(3),
+                level: ScopeLevel::File,
+            }]
+        );
+        assert_eq!(result.findings, []);
+    }
+
+    #[test]
+    fn should_derive_file_scope_for_a_same_file_consumer() {
+        let tree = sample_tree();
+        // node 1 in file 3 consumes node 0 in file 3.
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 3, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_zero = result.scopes.iter().find(|scope| scope.node == NodeId(0));
+        assert_eq!(scope_zero.map(|scope| scope.level), Some(ScopeLevel::File));
+    }
+
+    #[test]
+    fn should_derive_folder_scope_for_cross_file_consumers_in_one_folder() {
+        // folder 1 holds two files, 3 and 5; consumers in both reach the symbol.
+        let mut containers = sample_tree().containers().to_vec();
+        containers.push(container(5, ScopeLevel::File, Some(1)));
+        let tree = ContainerTree::new(containers);
+
+        // node 0 in file 3; consumed by node 1 (file 3) and node 2 (file 5).
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(2, 5, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call), edge(2, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_zero = result.scopes.iter().find(|scope| scope.node == NodeId(0));
+        assert_eq!(
+            scope_zero.map(|scope| scope.level),
+            Some(ScopeLevel::Folder)
+        );
+    }
+
+    #[test]
+    fn should_derive_package_scope_for_cross_folder_consumers() {
+        let tree = sample_tree();
+        // node 0 in file 3 (folder 1); consumed from file 4 (folder 2).
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 4, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_zero = result.scopes.iter().find(|scope| scope.node == NodeId(0));
+        assert_eq!(
+            scope_zero.map(|scope| scope.level),
+            Some(ScopeLevel::Package)
+        );
+    }
+
+    #[test]
+    fn should_flag_a_declared_visibility_wider_than_derived() {
+        let tree = sample_tree();
+        // node 0 declared package-public but consumed only within its own file.
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::Package),
+            node(1, 3, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        assert_eq!(
+            result.findings,
+            vec![Finding {
+                node: NodeId(0),
+                declared: ScopeLevel::Package,
+                derived: ScopeLevel::File,
+            }]
+        );
+    }
+
+    /// Builds a package-public re-export node in `container`.
+    fn re_export(id: u32, container: u32) -> Node {
+        Node {
+            re_export: true,
+            display_name: None,
+            test_source: false,
+            owner: None,
+            ..node(id, container, NodeKind::Symbol, ScopeLevel::Package)
+        }
+    }
+
+    #[test]
+    fn should_not_flag_a_re_export_node_whose_consumers_resolve_to_the_original() {
+        let tree = sample_tree();
+        // node 0 is the original in file 3, node 1 a package-public barrel
+        // re-export in file 4; the consumer (node 2) was flattened onto node 0.
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::Package),
+            re_export(1, 4),
+            node(2, 4, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::ReExport), edge(2, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        // the original is consumed across folders, so it needs its package
+        // scope; the re-export publishes it and is never narrowed.
+        assert_eq!(
+            result.findings,
+            [],
+            "a re-export publishes another declaration and is never narrowed"
+        );
+    }
+
+    #[test]
+    fn should_not_flag_a_re_export_whose_target_is_not_a_node() {
+        let tree = sample_tree();
+        // `pub use other_crate as alias;` — the target is a crate root, which is
+        // not a node, so the adapter emits no re-export edge for it.
+        let nodes = vec![re_export(0, 3)];
+
+        let result = derive_visibility(&tree, &nodes, &[]);
+
+        assert_eq!(result.findings, Vec::new());
+    }
+
+    #[test]
+    fn should_flag_an_unmarked_node_even_when_it_sources_a_re_export_edge() {
+        let tree = sample_tree();
+        // the flag, not the edge, decides the exemption (ADR-20).
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 4, NodeKind::Symbol, ScopeLevel::Package),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::ReExport)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.node == NodeId(1)),
+            "an unmarked over-declared node is a finding; got {:?}",
+            result.findings
+        );
+    }
+
+    #[test]
+    fn should_not_flag_a_declared_visibility_matching_derived() {
+        let tree = sample_tree();
+        // declared folder, consumed across files of one folder -> derived folder.
+        let mut containers = sample_tree().containers().to_vec();
+        containers.push(container(5, ScopeLevel::File, Some(1)));
+        let tree2 = ContainerTree::new(containers);
+        let _ = tree;
+
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::Folder),
+            node(1, 5, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree2, &nodes, &edges);
+
+        assert_eq!(result.findings, []);
+    }
+
+    #[test]
+    fn should_widen_a_signature_type_to_its_exported_function_scope() {
+        let tree = sample_tree();
+        // node 0 (function, file 3) is consumed across folders -> package scope.
+        // node 2 (type, file 3) appears in node 0's signature; it should inherit
+        // package scope even though it has no cross-folder consumer of its own.
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 4, NodeKind::Symbol, ScopeLevel::File),
+            node(2, 3, NodeKind::Type, ScopeLevel::File),
+        ];
+        let edges = vec![
+            edge(1, 0, EdgeKind::Call),
+            edge(0, 2, EdgeKind::TypeReference),
+        ];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_type = result.scopes.iter().find(|scope| scope.node == NodeId(2));
+        assert_eq!(
+            scope_type.map(|scope| scope.level),
+            Some(ScopeLevel::Package)
+        );
+    }
+
+    #[test]
+    fn should_not_widen_a_signature_type_for_a_file_private_function() {
+        let tree = sample_tree();
+        // function 0 is consumed only within its own file (file scope); its
+        // signature type 2 must stay file-private.
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(2, 3, NodeKind::Type, ScopeLevel::File),
+        ];
+        let edges = vec![
+            edge(1, 0, EdgeKind::Call),
+            edge(0, 2, EdgeKind::TypeReference),
+        ];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_type = result.scopes.iter().find(|scope| scope.node == NodeId(2));
+        assert_eq!(scope_type.map(|scope| scope.level), Some(ScopeLevel::File));
+    }
+
+    #[test]
+    fn should_propagate_type_exposure_transitively_to_a_fixpoint() {
+        // function 0 (package scope) exposes type 2; type 2 exposes type 3 via
+        // inheritance. Both should reach package scope through the fixpoint.
+        let tree = sample_tree();
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 4, NodeKind::Symbol, ScopeLevel::File),
+            node(2, 3, NodeKind::Type, ScopeLevel::File),
+            node(3, 3, NodeKind::Type, ScopeLevel::File),
+        ];
+        let edges = vec![
+            edge(1, 0, EdgeKind::Call),
+            edge(0, 2, EdgeKind::TypeReference),
+            edge(2, 3, EdgeKind::Inheritance),
+        ];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_three = result.scopes.iter().find(|scope| scope.node == NodeId(3));
+        assert_eq!(
+            scope_three.map(|scope| scope.level),
+            Some(ScopeLevel::Package)
+        );
+    }
+
+    #[test]
+    fn should_emit_scopes_and_findings_in_ascending_node_order() {
+        let tree = sample_tree();
+        let nodes = vec![
+            node(2, 3, NodeKind::Symbol, ScopeLevel::Package),
+            node(0, 3, NodeKind::Symbol, ScopeLevel::Package),
+            node(1, 3, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call), edge(1, 2, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_ids: Vec<u32> = result.scopes.iter().map(|scope| scope.node.0).collect();
+        assert_eq!(scope_ids, vec![0, 1, 2]);
+        let finding_ids: Vec<u32> = result
+            .findings
+            .iter()
+            .map(|finding| finding.node.0)
+            .collect();
+        assert_eq!(finding_ids, vec![0, 2]);
+    }
+
+    #[test]
+    fn should_resolve_lca_across_forest_roots_to_a_root() {
+        // two disjoint trees: package 0 -> file 1, and package 2 -> file 3.
+        let tree = ContainerTree::new(vec![
+            container(0, ScopeLevel::Package, None),
+            container(1, ScopeLevel::File, Some(0)),
+            container(2, ScopeLevel::Package, None),
+            container(3, ScopeLevel::File, Some(2)),
+        ]);
+        // node 0 in file 1 consumed from file 3 in the other tree.
+        let nodes = vec![
+            node(0, 1, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 3, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        // the LCA is a package root: the widest, conservative scope.
+        let scope_zero = result.scopes.iter().find(|scope| scope.node == NodeId(0));
+        assert_eq!(
+            scope_zero.map(|scope| scope.level),
+            Some(ScopeLevel::Package)
+        );
+    }
+
+    #[test]
+    fn should_count_prepared_findings_like_a_full_derivation_for_every_placement() {
+        // files 3 and 4 sit in different folders; a fifth file shares folder 1
+        // with file 3. Eight nodes mix kinds, declared levels and exemptions,
+        // wired by calls, a signature edge onto a type, inheritance and a loop.
+        let tree = ContainerTree::new(vec![
+            container(0, ScopeLevel::Package, None),
+            container(1, ScopeLevel::Folder, Some(0)),
+            container(2, ScopeLevel::Folder, Some(0)),
+            container(3, ScopeLevel::File, Some(1)),
+            container(4, ScopeLevel::File, Some(2)),
+            container(5, ScopeLevel::File, Some(1)),
+        ]);
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::Package),
+            node(1, 3, NodeKind::Type, ScopeLevel::Folder),
+            node(2, 4, NodeKind::Symbol, ScopeLevel::Folder),
+            node(3, 4, NodeKind::Type, ScopeLevel::Package),
+            node(4, 5, NodeKind::Symbol, ScopeLevel::Domain),
+            Node {
+                public_api: true,
+                ..node(5, 5, NodeKind::Symbol, ScopeLevel::Package)
+            },
+            node(6, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(7, 4, NodeKind::FileBody, ScopeLevel::Folder),
+        ];
+        let edges = vec![
+            edge(2, 0, EdgeKind::Call),
+            edge(4, 0, EdgeKind::Call),
+            edge(0, 1, EdgeKind::TypeReference),
+            edge(2, 3, EdgeKind::Inheritance),
+            edge(4, 3, EdgeKind::Call),
+            edge(6, 6, EdgeKind::Call),
+            edge(5, 2, EdgeKind::Call),
+            edge(7, 99, EdgeKind::Call),
+        ];
+        let prepared = PreparedVisibility::new(&tree, &nodes, &edges);
+        let files = [ContainerId(3), ContainerId(4), ContainerId(5)];
+
+        // every assignment of the eight nodes to the three files: 3^8 trials
+        // through one prepared table.
+        for (trial, code) in (0..3_usize.pow(8)).enumerate() {
+            let mut rest = code;
+            let mut containers = Vec::new();
+            for _ in 0..nodes.len() {
+                containers.push(files.get(rest % 3).copied().unwrap_or(ContainerId(3)));
+                rest /= 3;
+            }
+            let mut placed = nodes.clone();
+            for (node, container) in placed.iter_mut().zip(&containers) {
+                node.container = *container;
+            }
+            let expected = derive_visibility(&tree, &placed, &edges).findings.len();
+            assert_eq!(
+                prepared.finding_count(&containers),
+                expected,
+                "trial {trial}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_skip_a_signature_edge_whose_endpoint_is_not_a_node() {
+        let tree = sample_tree();
+        // the dangling signature edge comes first; the exported function's real
+        // signature type must still be widened after it.
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 4, NodeKind::Symbol, ScopeLevel::File),
+            node(2, 3, NodeKind::Type, ScopeLevel::File),
+        ];
+        let edges = vec![
+            edge(0, 99, EdgeKind::TypeReference),
+            edge(1, 0, EdgeKind::Call),
+            edge(0, 2, EdgeKind::TypeReference),
+        ];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_type = result.scopes.iter().find(|scope| scope.node == NodeId(2));
+        assert_eq!(
+            scope_type.map(|scope| scope.level),
+            Some(ScopeLevel::Package)
+        );
+    }
+
+    #[test]
+    fn should_not_widen_a_non_type_node_named_by_an_exported_signature() {
+        let tree = sample_tree();
+        // function 0 is exported at package scope and type-references symbol 2,
+        // which is not a type: 2 keeps its own-file scope, so its package
+        // declaration is a finding in the derivation and the prepared count.
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::Package),
+            node(1, 4, NodeKind::Symbol, ScopeLevel::File),
+            node(2, 3, NodeKind::Symbol, ScopeLevel::Package),
+        ];
+        let edges = vec![
+            edge(1, 0, EdgeKind::Call),
+            edge(0, 2, EdgeKind::TypeReference),
+        ];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+        let prepared = PreparedVisibility::new(&tree, &nodes, &edges);
+        let count = prepared.finding_count(&[ContainerId(3), ContainerId(4), ContainerId(3)]);
+
+        assert_eq!(
+            result.findings,
+            vec![Finding {
+                node: NodeId(2),
+                declared: ScopeLevel::Package,
+                derived: ScopeLevel::File,
+            }]
+        );
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn should_count_no_exposure_from_an_unconsumed_file_private_function() {
+        let tree = sample_tree();
+        // nothing consumes function 0, so its scope is its own file and its
+        // signature type 1 stays file-private: the type's folder declaration is
+        // the one finding.
+        let nodes = vec![
+            node(0, 3, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 3, NodeKind::Type, ScopeLevel::Folder),
+        ];
+        let edges = vec![edge(0, 1, EdgeKind::TypeReference)];
+
+        let prepared = PreparedVisibility::new(&tree, &nodes, &edges);
+        let count = prepared.finding_count(&[ContainerId(3), ContainerId(3)]);
+
+        assert_eq!(count, 1);
+        assert_eq!(derive_visibility(&tree, &nodes, &edges).findings.len(), 1);
+    }
+
+    #[test]
+    fn should_level_a_container_outside_the_dense_id_range_as_the_widest() {
+        // container 5 is listed but its id lies past the two-container range, so
+        // the tables hold no level for it: it reads as the widest level, and the
+        // folder-level export is kept rather than narrowed.
+        let tree = ContainerTree::new(vec![
+            container(0, ScopeLevel::Package, None),
+            container(5, ScopeLevel::Folder, Some(0)),
+        ]);
+        let nodes = vec![node(0, 5, NodeKind::Symbol, ScopeLevel::Folder)];
+
+        let result = derive_visibility(&tree, &nodes, &[]);
+
+        assert_eq!(
+            result.scopes,
+            vec![DerivedScope {
+                node: NodeId(0),
+                container: ContainerId(5),
+                level: ScopeLevel::PackageGroup,
+            }]
+        );
+        assert!(result.findings.is_empty(), "{:?}", result.findings);
+    }
+
+    #[test]
+    fn should_meet_two_files_at_a_parent_missing_from_the_tree() {
+        // both files name container 9 as parent, which the tree does not hold:
+        // the missing parent heads their tree, so they meet there.
+        let tree = ContainerTree::new(vec![
+            container(0, ScopeLevel::File, Some(9)),
+            container(1, ScopeLevel::File, Some(9)),
+        ]);
+        let nodes = vec![
+            node(0, 0, NodeKind::Symbol, ScopeLevel::File),
+            node(1, 1, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_zero = result.scopes.iter().find(|scope| scope.node == NodeId(0));
+        assert_eq!(
+            scope_zero.map(|scope| scope.container),
+            Some(ContainerId(9))
+        );
+    }
+
+    #[test]
+    fn should_not_narrow_a_symbol_whose_users_meet_at_a_missing_parent() {
+        // the files meet at container 9, which the tree does not hold: its level
+        // is unknown, so the package-level export is kept rather than narrowed
+        // to the file level the missing parent used to read as.
+        let tree = ContainerTree::new(vec![
+            container(0, ScopeLevel::File, Some(9)),
+            container(1, ScopeLevel::File, Some(9)),
+        ]);
+        let nodes = vec![
+            node(0, 0, NodeKind::Symbol, ScopeLevel::Package),
+            node(1, 1, NodeKind::Symbol, ScopeLevel::File),
+        ];
+        let edges = vec![edge(1, 0, EdgeKind::Call)];
+
+        let result = derive_visibility(&tree, &nodes, &edges);
+
+        let scope_zero = result.scopes.iter().find(|scope| scope.node == NodeId(0));
+        assert_eq!(
+            scope_zero.map(|scope| scope.level),
+            Some(ScopeLevel::PackageGroup)
+        );
+        assert!(result.findings.is_empty(), "{:?}", result.findings);
+    }
+}
