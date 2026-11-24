@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ir",
     "crates/core",
+    "crates/engine",
     "crates/adapter-typescript",
     "crates/adapter-rust",
     "crates/adapter-python",

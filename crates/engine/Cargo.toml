@@ -1,0 +1,27 @@
+[package]
+name = "unlace-engine"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+
+[lib]
+name = "unlace_engine"
+path = "src/lib.rs"
+
+[dependencies]
+unlace-ir = { path = "../ir" }
+unlace-core = { path = "../core" }
+unlace-adapter-typescript = { path = "../adapter-typescript" }
+unlace-adapter-rust = { path = "../adapter-rust" }
+unlace-adapter-python = { path = "../adapter-python" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smol_str = { workspace = true }
+thiserror = { workspace = true }
+rayon = { workspace = true }
+toml = "1"
+glob = "0.3"
+ignore = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+//! One evaluation's dense view of a placement function.
+
+use unlace_ir::ContainerId;
+
+/// The dense view of one placement: the candidate file each node id occupies.
+#[derive(Clone)]
+pub(in crate::analyze) struct Placed {
+    pub(super) files: Vec<Option<ContainerId>>,
+    /// One past the largest container id any node occupies.
+    pub(super) slots: usize,
+}
+
+impl Placed {
+    pub(super) fn file(&self, node: u32) -> Option<ContainerId> {
+        self.files.get(node as usize).copied().flatten()
+    }
+
+    /// Places `node` in `file`, replacing wherever it was.
+    pub(in crate::analyze) fn set(&mut self, node: u32, file: ContainerId) {
+        let slots = &mut self.slots;
+        self.files
+            .get_mut(node as usize)
+            .into_iter()
+            .for_each(|cell| {
+                *cell = Some(file);
+                *slots = (*slots).max(file.0 as usize + 1);
+            });
+    }
+}

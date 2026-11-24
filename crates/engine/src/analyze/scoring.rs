@@ -1,0 +1,63 @@
+//! Scoring of the current layout and of candidate trees against the core objective.
+//!
+//! Each child owns one job: the config views, the current-layout score, the
+//! candidate view handed to the scorer, and the placement-derived inputs it reads.
+
+use smol_str::SmolStr;
+use unlace_ir::{ContainerId, ScopeLevel};
+
+#[cfg(test)]
+mod candidate;
+mod capacity;
+mod context;
+mod current;
+mod cycles;
+mod distance;
+#[cfg(test)]
+mod inputs;
+#[cfg(test)]
+mod relocation_counts;
+mod sources;
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+pub(in crate::analyze) use candidate::score_candidate;
+#[cfg(test)]
+pub(in crate::analyze) use capacity::{binding_pressure, physical_binding_pressure};
+pub(in crate::analyze) use context::{Placed, ScoringContext, SnapshotScoring};
+#[cfg(test)]
+pub(in crate::analyze) use current::score_current;
+pub(in crate::analyze) use current::{score_current_with_affinity, score_current_with_overlay};
+pub(in crate::analyze) use cycles::CycleCounts;
+#[cfg(test)]
+pub(in crate::analyze) use distance::move_distance;
+#[cfg(test)]
+use inputs::cohesion_inputs;
+#[cfg(test)]
+pub(in crate::analyze) use relocation_counts::{
+    companion_separations, dependency_only_relocations,
+};
+pub(in crate::analyze) use sources::{CapacitySource, ProfileSource, level_caps};
+
+/// The description of one container to intern: the name key it carries, the
+/// level it sits at, and its parent.
+#[derive(Clone, Copy)]
+pub(in crate::analyze) struct ContainerSpec<'name> {
+    /// The name key the container's cluster carries.
+    pub(in crate::analyze) name: &'name SmolStr,
+    /// The level the container sits at.
+    pub(in crate::analyze) level: ScopeLevel,
+    /// The container's parent, or `None` at the root.
+    pub(in crate::analyze) parent: Option<ContainerId>,
+    /// True for the synthetic `workspace` folder bucket the render collapses.
+    /// Only a root-file folder is ever synthetic; every upper level is false.
+    pub(in crate::analyze) synthetic: bool,
+    /// True when the container's key is keyed under the package-group label
+    /// (`Container::label_keyed`). A candidate folder takes the flag of the real
+    /// folder it stands for; a package or domain is flagged when every folder
+    /// beneath it is, so the provenance is stated once per real folder and
+    /// derived upward.
+    pub(in crate::analyze) label_keyed: bool,
+}

@@ -1,0 +1,174 @@
+//! Mirrors relocation outcomes back onto the layout views.
+
+use std::collections::BTreeSet;
+
+use smol_str::SmolStr;
+
+use crate::analyze::relocation::collision::CollisionFold;
+use crate::config::{MirrorCaptures, MirrorTemplate, ProfileConfig, TestMirrorRule};
+
+pub(in crate::analyze) use self::links::exact_links;
+pub(in crate::analyze) use self::pairs::adapter_pairs;
+
+mod integrity;
+mod links;
+mod pairs;
+mod projection;
+mod shadow;
+#[cfg(test)]
+mod tests;
+mod vetoes;
+
+/// Placement decisions produced by the same deterministic solver restart that
+/// must stay coupled to its partition: mirror follower outcomes, and the file
+/// moves withdrawn for a path collision whose declarations the symbol pass is
+/// offered instead (ADR-21).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::analyze) struct PolishEvidence {
+    pub(in crate::analyze) outcomes: Vec<MirrorOutcome>,
+    pub(in crate::analyze) folds: Vec<CollisionFold>,
+}
+
+impl PolishEvidence {
+    /// Drops the outcomes of the given test SCCs, whose pairs were reverted.
+    pub(super) fn forget_tests(&mut self, tests: &BTreeSet<u32>) {
+        self.outcomes
+            .retain(|outcome| !tests.contains(&outcome.mirror_scc));
+    }
+
+    pub(super) fn applied_sccs(&self) -> BTreeSet<u32> {
+        self.outcomes
+            .iter()
+            .filter_map(|outcome| {
+                matches!(outcome.disposition, MirrorDisposition::Applied)
+                    .then_some(outcome.mirror_scc)
+            })
+            .collect()
+    }
+
+    /// Whether the last follower pass refused any test, so its source's move
+    /// was dropped and the layout must be placed again.
+    pub(super) fn dropped_a_move(&self) -> bool {
+        self.outcomes
+            .iter()
+            .any(|outcome| matches!(outcome.disposition, MirrorDisposition::Blocked(_)))
+    }
+
+    fn applied_destination(&self, scc: u32) -> Option<&str> {
+        self.outcomes.iter().find_map(|outcome| {
+            (outcome.mirror_scc == scc && matches!(outcome.disposition, MirrorDisposition::Applied))
+                .then_some(outcome.intended_to.as_str())
+        })
+    }
+}
+
+/// One attempted exact test follower and the hard-constraint result it earned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::analyze) struct MirrorOutcome {
+    mirror_scc: u32,
+    source_path: String,
+    path: String,
+    from: String,
+    intended_to: String,
+    disposition: MirrorDisposition,
+}
+
+/// Whether an exact test follower changed placement or met a hard constraint.
+/// A blocked follower drops its source's whole move (ADR-26); the outcome only
+/// tells the settling loop to place the layout again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::analyze) enum MirrorDisposition {
+    Applied,
+    Blocked(MirrorBlock),
+}
+
+/// The first hard constraint that refused a test follower.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::analyze) enum MirrorBlock {
+    /// The follower would leave its pass-start manifest package (ADR-17).
+    PackageBoundary,
+    /// The follower would cross its pass-start render namespace.
+    NamespaceBoundary,
+    /// The destination would exceed its configured physical capacity.
+    Capacity,
+    /// Another file already occupies the derived destination path.
+    PathCollision,
+}
+
+/// Immutable template match between one production source and one present test.
+#[derive(Debug, Clone)]
+pub(in crate::analyze) struct ExactMirrorLink {
+    source_vertex: u32,
+    source_root: String,
+    test_template: String,
+    captures: MirrorCaptures,
+}
+
+/// A candidate folder together with the coordinate system its path uses.
+#[derive(Debug, Clone)]
+pub(in crate::analyze) enum ProjectedFolder {
+    RepositoryRelative(SmolStr),
+    Rooted(SmolStr),
+}
+
+impl ProjectedFolder {
+    pub(super) fn repository_relative(&self, root: &str) -> SmolStr {
+        match self {
+            Self::RepositoryRelative(path) => path.clone(),
+            Self::Rooted(path) => {
+                let segments: Vec<&str> = path
+                    .split('/')
+                    .filter(|segment| !segment.is_empty())
+                    .collect();
+                match segments.split_first() {
+                    Some((head, tail)) if *head == root => SmolStr::new(tail.join("/")),
+                    _ => path.clone(),
+                }
+            }
+        }
+    }
+}
+
+pub(in crate::analyze) fn match_source_template(
+    template: &str,
+    path: &str,
+) -> Option<MirrorCaptures> {
+    MirrorTemplate::parse(template)?.captures(path)
+}
+
+pub(in crate::analyze) fn fill_mirror_template(template: &str, dir: &str, stem: &str) -> String {
+    MirrorTemplate::parse(template)
+        .map(|parsed| parsed.fill(dir, stem))
+        .unwrap_or_default()
+}
+
+pub(in crate::analyze) fn parent_path(path: &str) -> String {
+    path.rsplit_once('/')
+        .map_or_else(String::new, |(parent, _)| parent.to_owned())
+}
+
+/// The user's exact mirror rules; language conventions come from adapter facts.
+pub(in crate::analyze) fn mirror_rules(profile: &ProfileConfig) -> Vec<TestMirrorRule> {
+    profile.relocation.test_mirroring.rules.clone()
+}
+
+#[cfg(test)]
+mod projected_folder_tests {
+    use smol_str::SmolStr;
+
+    use super::ProjectedFolder;
+
+    #[test]
+    fn should_strip_the_root_label_from_a_rooted_folder() {
+        let folder = ProjectedFolder::Rooted(SmolStr::new("ws/tests/unit"));
+
+        assert_eq!(folder.repository_relative("ws"), "tests/unit");
+    }
+
+    #[test]
+    fn should_keep_a_rooted_folder_under_another_label_verbatim() {
+        let folder = ProjectedFolder::Rooted(SmolStr::new("other/tests/unit"));
+
+        assert_eq!(folder.repository_relative("ws"), "other/tests/unit");
+    }
+}
