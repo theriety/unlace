@@ -1,0 +1,11 @@
+python [packageGroup]
+  python [package]
+    pkg [domain]
+      pkg [folder]
+        pkg/rectangle.py [file] 6 sloc
+          - Rectangle (file)
+          - summarize (file)
+        pkg/shape.py [file] 3 sloc
+          - Shape (file)
+          - describe_shape (file)
+All findings and moves are suggestions. Applying them may break the build; use your own judgement.

@@ -1,0 +1,21 @@
+workspace-rust [packageGroup]
+  crates/app [package]
+    crates/app/src/lib.rs [file] 9 sloc
+      - describe (package)
+      - combined_total (package)
+      - ReMeasure (package)
+  crates/core [package]
+    crates/core/src/lib.rs [file] 18 sloc
+      - Report (package)
+      - Report::new (package)
+      - Report::doubled (package)
+      - impl Summarize for Report (file)
+      - sample_report (file)
+      - report_doubles_its_measure (file)
+  crates/util [package]
+    crates/util/src/lib.rs [file] 12 sloc
+      - Measure (package)
+      - Measure::new (package)
+      - Measure::doubled (package)
+      - Summarize (package)
+All findings and moves are suggestions. Applying them may break the build; use your own judgement.

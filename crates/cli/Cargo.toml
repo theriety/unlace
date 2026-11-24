@@ -17,5 +17,13 @@ unicode-width = "0.2"
 [dev-dependencies]
 assert_cmd = "2"
 
+[[test]]
+name = "parity"
+path = "tests/e2e/parity.rs"
+
+[[test]]
+name = "cli_acceptance"
+path = "tests/e2e/cli_acceptance.rs"
+
 [lints]
 workspace = true

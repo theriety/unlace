@@ -1,0 +1,25 @@
+nested-ts [packageGroup]
+  nested-ts [package]
+    __tests__ [domain]
+      __tests__ [folder]
+        src/__tests__/app.spec.ts [file] 0 sloc
+          - shouldRun (file)
+        src/__tests__/support.ts [file] 0 sloc
+          - makeRect (file)
+    src/app.ts [file] 8 sloc
+      - run (file)
+      - lazy (file)
+    geometry [domain]
+      geometry [folder]
+        src/geometry/index.ts [file] 0 sloc
+          - Rectangle (file)
+          - describe (file)
+          - Dimensions (file)
+          - Shape (file)
+        src/geometry/rectangle.ts [file] 9 sloc
+          - Rectangle (file)
+          - describe (file)
+        src/geometry/shape.ts [file] 7 sloc
+          - Shape (file)
+          - Dimensions (file)
+All findings and moves are suggestions. Applying them may break the build; use your own judgement.

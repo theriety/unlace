@@ -1,0 +1,32 @@
+# Unlace report — nested-ts
+
+6 files · 12 symbols · 13 edges
+Snapshot `7a78215efee4889f9060cb366e53fab26f8254875e90a6ec7fabb14abebd6470`
+All findings and moves are suggestions. Applying them may break the build; use your own judgement.
+
+## Structural findings
+
+```text
+Shared findings (1)
+  - testOnly [violation] at `src/app.ts`, `run`: Only tests in this repo use `run`. It is public,
+    so code outside this repo may use it too; check before moving or deleting it.
+
+anchored profile-specific findings (0)
+  None.
+
+greenfield profile-specific findings (0)
+  None.
+```
+
+## Candidate layouts
+
+```text
+anchored — 0 candidates (baseline 0.2553; search converged; current layout already optimal)
+greenfield — 0 candidates (baseline 0.4553; search converged; current layout already optimal)
+```
+
+## Advice
+
+```text
+  None.
+```
