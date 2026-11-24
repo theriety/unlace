@@ -1,0 +1,191 @@
+# Unlace configuration — every key is optional and the file itself is optional.
+# Values below use built-in defaults except for repository fixture exclusions.
+# CLI flags override these values; these override the built-in defaults.
+
+[adapters]
+# Enabled language adapters. One or more of: typescript, rust, python.
+languages = ["typescript", "rust", "python"]
+# Source-inclusion globs, relative to the analysis root.
+include = ["**/*"]
+# Source-exclusion globs, applied after inclusion. Fixture projects are analysis
+# inputs, including intentionally invalid source, rather than package source.
+exclude = [
+    "**/.git/**",
+    "**/node_modules/**",
+    "**/target/**",
+    "**/.venv/**",
+    "**/tests/**/fixtures/**",
+    "crates/eval/fixtures/**",
+]
+# Directory names treated as transparent below each package root, so a source
+# file and its test share a folder (`source_roots` is accepted as an alias).
+source-roots = ["src", "spec", "test", "tests", "lib", "dist", "__tests__"]
+
+[analysis]
+# Complete parameter profiles to execute against the same discovered snapshot.
+profiles = ["anchored", "greenfield"]
+# Parallelism hint; 0 = all logical cores and never affects results.
+jobs = 0
+
+[tests]
+# File cap (in production SLOC) for test-support files; test-case files exempt.
+helper-cap = 600
+# Glob patterns deciding test files on top of the built-in detection. A pattern
+# containing '/' matches against the repo-relative path; a bare pattern matches
+# against the basename. A leading '!' marks matching files as NOT test code and
+# wins over every other signal. Invalid or empty patterns are rejected with a
+# `tests.patterns[i]` error.
+# patterns = ["*.spec.*", "apps/web/__tests__/**", "!spec/fixtures/**"]
+patterns = []
+# Keep the adapters' built-in detection (names such as `.spec.` / `.test.` /
+# `__tests__`, TypeScript `spec`/`test`/`tests` roots below a package root, Rust
+# `tests/` + `#[cfg(test)]`, Python mirrors, adapter test pairs and test-support
+# crates). Disabling it makes only `patterns` decide; with an empty list nothing
+# is a test file.
+builtins = true
+
+[profiles.anchored]
+candidates = 3
+seed = 42
+
+[profiles.anchored.capacity]
+# Production SLOC per file (non-blank, non-comment).
+file = 600
+# File nodes per folder.
+folder = 20
+# Folders per domain.
+domain = 16
+# Domains per package.
+package = 15
+# Packages per package group.
+package-group = 12
+
+[profiles.anchored.objective]
+# lambda: sibling size-imbalance penalty weight.
+imbalance = 0.1
+# alpha: naming-token cohesion bonus weight (both modes).
+naming = 0.3
+# beta: current-path cohesion bonus weight (anchored only).
+path = 0.2
+# mu: move-distance anchoring penalty weight (anchored only).
+anchor = 1.0
+# Fixed score penalty per declaration moved toward dependencies but no consumers.
+dependency-only = 0.05
+companion-separation = 0.05
+capacity = 4.0
+
+[profiles.anchored.weights]
+# Weight of a runtime value import.
+value-import = 1.0
+# Weight of a subtype / implements relationship.
+inheritance = 1.5
+# Weight of a direct call.
+call = 1.0
+# Weight of a type reference.
+type-reference = 0.3
+# Weight of a re-export (zero — flattened during normalization).
+re-export = 0.0
+same-file-symbol = 1.0
+same-file-type = 3.0
+
+[profiles.anchored.solver]
+# Maximum SCC size that attempts the exact ILP.
+ilp-threshold = 300
+# Per-SCC exact-solve budget, in seconds, before the heuristic fallback.
+timeout-seconds = 60
+
+[profiles.anchored.diversity]
+# Restart pool multiplier: pool size = this x k.
+seeds-per-candidate = 10
+# Maximum relative score gap for a candidate to remain in the keep-band.
+score-tolerance = 0.05
+# Minimum pairwise variation-of-information between returned candidates.
+min-distance = 0.05
+
+[profiles.anchored.relocation]
+pin-detected-test-symbols = true
+# Let relocations cross manifest package boundaries (off by default). The
+# `analyze --allow-cross-package-moves` flag turns it on for every profile.
+allow-cross-package-moves = false
+forbid-file-moves = []
+forbid-symbol-moves = []
+
+[profiles.anchored.relocation.test-mirroring]
+enabled = true
+builtins = true
+
+[profiles.anchored.qualification]
+minimum-evidence = 0.60
+minimum-structural = 0.50
+minimum-ambiguity-margin = 0.15
+
+[profiles.anchored.qualification.weights]
+unique-owner = 0.10
+role-affinity = 0.10
+source-cohesion = 0.25
+destination-cohesion = 0.25
+producer-evidence = 0.10
+architectural-reach = 0.20
+
+[profiles.greenfield]
+candidates = 3
+seed = 42
+
+[profiles.greenfield.capacity]
+file = 600
+folder = 20
+domain = 16
+package = 15
+package-group = 12
+
+[profiles.greenfield.objective]
+imbalance = 0.1
+naming = 0.3
+path = 0.0
+anchor = 0.0
+dependency-only = 0.05
+companion-separation = 0.05
+capacity = 4.0
+
+[profiles.greenfield.weights]
+value-import = 1.0
+inheritance = 1.5
+call = 1.0
+type-reference = 0.3
+re-export = 0.0
+same-file-symbol = 1.0
+same-file-type = 3.0
+
+[profiles.greenfield.solver]
+ilp-threshold = 300
+timeout-seconds = 60
+
+[profiles.greenfield.diversity]
+seeds-per-candidate = 10
+score-tolerance = 0.05
+min-distance = 0.05
+
+[profiles.greenfield.relocation]
+pin-detected-test-symbols = true
+# Let relocations cross manifest package boundaries (off by default). The
+# `analyze --allow-cross-package-moves` flag turns it on for every profile.
+allow-cross-package-moves = false
+forbid-file-moves = []
+forbid-symbol-moves = []
+
+[profiles.greenfield.relocation.test-mirroring]
+enabled = true
+builtins = true
+
+[profiles.greenfield.qualification]
+minimum-evidence = 0.60
+minimum-structural = 0.50
+minimum-ambiguity-margin = 0.15
+
+[profiles.greenfield.qualification.weights]
+unique-owner = 0.10
+role-affinity = 0.10
+source-cohesion = 0.25
+destination-cohesion = 0.25
+producer-evidence = 0.10
+architectural-reach = 0.20
