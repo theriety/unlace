@@ -1,0 +1,19 @@
+# A deliberately malformed target: `wobble` is not a schema-v1 key, so loading
+# it must fail at parse time with the TOML error verbatim.
+schema = 1
+fixture = "inversion"
+wobble = 1
+
+[meta]
+failure_mode = "anchored-inversion"
+language = "python"
+question = "Does a misspelled key fail loud?"
+
+[run]
+mode = "both"
+candidates = 3
+seed = 42
+config = "defaults"
+
+[[assert]]
+modes = ["anchored"]

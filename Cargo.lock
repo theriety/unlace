@@ -3791,6 +3791,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "unlace-eval"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "unlace-engine",
+]
+
+[[package]]
 name = "unlace-ir"
 version = "1.0.0"
 dependencies = [
