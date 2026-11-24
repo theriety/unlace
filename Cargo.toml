@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ir",
     "crates/core",
+    "crates/adapter-typescript",
 ]
 
 [workspace.package]
