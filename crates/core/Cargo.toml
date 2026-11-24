@@ -1,0 +1,22 @@
+[package]
+name = "unlace-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+
+[lib]
+name = "unlace_core"
+path = "src/lib.rs"
+
+[dependencies]
+unlace-ir = { path = "../ir" }
+smol_str = { workspace = true }
+highs = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[lints]
+workspace = true
