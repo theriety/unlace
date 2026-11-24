@@ -4,7 +4,13 @@ members = [
     "crates/ir",
     "crates/core",
     "crates/adapter-typescript",
+    "crates/adapter-rust",
 ]
+
+# The fixture cargo workspace under crates/adapter-rust/tests/fixtures is a
+# self-contained workspace loaded at runtime by the spike; it must not be
+# treated as a member of the outer workspace.
+exclude = ["crates/adapter-rust/tests/fixtures/workspace"]
 
 [workspace.package]
 version = "1.0.0"
