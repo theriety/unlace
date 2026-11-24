@@ -19,5 +19,6 @@ pub mod condense;
 pub mod graph;
 pub mod layer;
 pub mod score;
+pub mod shatter;
 
 pub use unlace_ir as ir;
