@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/adapter-typescript",
     "crates/adapter-rust",
+    "crates/adapter-python",
 ]
 
 # The fixture cargo workspace under crates/adapter-rust/tests/fixtures is a

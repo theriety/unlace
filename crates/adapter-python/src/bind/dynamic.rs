@@ -1,0 +1,94 @@
+//! Low-confidence edges for dynamic constructs and star imports.
+
+use std::collections::HashMap;
+
+use smol_str::SmolStr;
+use unlace_ir::{Edge, EdgeKind, Hardness, NodeId};
+
+use super::resolver::Resolver;
+use super::{CONFIDENCE_DYNAMIC, ExportTable, push_edge};
+use crate::parse::{Declaration, DynamicRef};
+
+/// Emits low-confidence edges for dynamic constructs and star imports.
+///
+/// `getattr(obj, "x")` and `importlib.import_module("m")` cannot be resolved to
+/// a precise target; a star import pulls in an unknown subset of the target's
+/// surface. Each becomes an honest edge below full confidence rather than a
+/// silent drop. A `getattr` on an imported binding links to that binding; an
+/// `importlib.import_module` of a string-literal module fans out over that
+/// module's public surface; a star import does the same over its target.
+pub(super) fn emit_dynamic(
+    declaration: &Declaration,
+    source: NodeId,
+    imported: &HashMap<SmolStr, NodeId>,
+    star_targets: &[NodeId],
+    resolver: &Resolver,
+    exports: &ExportTable,
+    edges: &mut Vec<Edge>,
+) {
+    for dynamic in &declaration.dynamic {
+        match dynamic {
+            DynamicRef::GetAttr(base) => {
+                if let Some(&target) = imported.get(base) {
+                    push_edge(
+                        edges,
+                        source,
+                        target,
+                        EdgeKind::ValueImport,
+                        Hardness::Hard,
+                        CONFIDENCE_DYNAMIC,
+                    );
+                }
+            }
+            DynamicRef::ImportModule(dotted) => {
+                for target in import_module_targets(dotted, resolver, exports) {
+                    push_edge(
+                        edges,
+                        source,
+                        target,
+                        EdgeKind::ValueImport,
+                        Hardness::Hard,
+                        CONFIDENCE_DYNAMIC,
+                    );
+                }
+            }
+        }
+    }
+    for &target in star_targets {
+        push_edge(
+            edges,
+            source,
+            target,
+            EdgeKind::ValueImport,
+            Hardness::Hard,
+            CONFIDENCE_DYNAMIC,
+        );
+    }
+}
+
+/// Resolves a string-literal `importlib.import_module` target to its public
+/// surface nodes.
+///
+/// The dotted argument is matched against the known module set; an unknown
+/// module yields no edge (the import is genuinely unresolvable). A resolved
+/// module fans out over its star-import surface: its closed `__all__`, else the
+/// non-underscore exports plus any names an open `__all__` lists — the same surface a star import would pull in.
+fn import_module_targets(
+    dotted: &SmolStr,
+    resolver: &Resolver,
+    exports: &ExportTable,
+) -> Vec<NodeId> {
+    let Some((module, target_exports)) = resolver
+        .module_of_dotted(dotted)
+        .and_then(|module| exports.get_key_value(module))
+    else {
+        return Vec::new();
+    };
+    let mut targets: Vec<NodeId> = target_exports
+        .iter()
+        .filter(|(name, _)| resolver.star_includes(module, name))
+        .map(|(_, &node)| node)
+        .collect();
+    targets.sort_unstable();
+    targets
+}

@@ -1,0 +1,88 @@
+//! The Python language adapter for Unlace.
+//!
+//! It implements the two-phase [`unlace_ir::Adapter`] contract: `parse`
+//! turns `.py` sources into syntax summaries (via rustpython-parser, in
+//! parallel), and `bind` runs a custom scope resolver over the module graph,
+//! emitting a language-agnostic [`unlace_ir::IrFragment`] — typed edges,
+//! three-valued test polarity, and per-symbol production SLOC.
+//!
+//! No off-the-shelf semantic database exists for Python in Rust, so the binder
+//! resolves lexical scope chains itself: absolute imports against the package
+//! root, relative imports against the importing module's package, `__init__.py`
+//! as the folder barrel, and honest low-confidence edges for Python's dynamic
+//! constructs (`getattr`, `importlib`, star imports via `__all__`).
+//!
+//! The trait threads the intermediate `parse::ParsedModule` summary through
+//! the opaque [`unlace_ir::ParseTree`] payload as canonical JSON, so the engine
+//! never needs to understand Python to merge fragments.
+
+mod bind;
+mod pairs;
+mod parse;
+mod scope;
+mod sloc;
+
+use std::path::PathBuf;
+
+use unlace_ir::{Adapter, AdapterError, IrFragment, ParseTree, SourceFile};
+
+use crate::parse::ParsedModule;
+
+/// The Python adapter: parses and binds `.py` sources.
+///
+/// The adapter is anchored at a repository `root`; absolute imports resolve
+/// against the dotted module names derived relative to it, and the laminar
+/// container tree hangs off it.
+#[derive(Debug, Clone)]
+pub struct PythonAdapter {
+    /// Repository root that module paths are relative to.
+    root: PathBuf,
+}
+
+impl PythonAdapter {
+    /// Creates an adapter anchored at `root`.
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+}
+
+impl Default for PythonAdapter {
+    fn default() -> Self {
+        Self::new(".")
+    }
+}
+
+impl Adapter for PythonAdapter {
+    fn parse(&self, files: &[SourceFile]) -> Result<Vec<ParseTree>, AdapterError> {
+        let modules = parse::parse(files)?;
+        Ok(modules.iter().map(serialize_module).collect())
+    }
+
+    fn bind(&self, trees: Vec<ParseTree>) -> Result<IrFragment, AdapterError> {
+        let modules = trees
+            .iter()
+            .map(deserialize_module)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bind::bind(&modules, &self.root))
+    }
+}
+
+/// Serializes a [`ParsedModule`] into an opaque [`ParseTree`] payload.
+///
+/// Serialization cannot fail: a summary holds only strings, numbers, booleans,
+/// sequences and unit enum variants, never a map with non-string keys.
+fn serialize_module(module: &ParsedModule) -> ParseTree {
+    ParseTree {
+        path: module.path.clone(),
+        payload: serde_json::to_string(module).unwrap_or_default(),
+    }
+}
+
+/// Deserializes a [`ParseTree`] payload back into a [`ParsedModule`].
+fn deserialize_module(tree: &ParseTree) -> Result<ParsedModule, AdapterError> {
+    serde_json::from_str(&tree.payload).map_err(|error| AdapterError::Bind {
+        path: tree.path.clone(),
+        reason: format!("failed to read parse summary: {error}"),
+    })
+}
