@@ -17,6 +17,7 @@
 
 pub mod cluster;
 pub mod condense;
+pub mod diversify;
 pub mod graph;
 pub mod layer;
 pub mod score;
