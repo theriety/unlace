@@ -18,5 +18,9 @@ rayon = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
 
+[[bench]]
+name = "graph"
+harness = false
+
 [lints]
 workspace = true

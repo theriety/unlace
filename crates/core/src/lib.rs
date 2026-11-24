@@ -15,6 +15,9 @@
 //! of information ([`diversify`]). It re-exports the IR contract so downstream
 //! crates have a single solver-facing entry point.
 
+pub mod condense;
+pub mod graph;
+pub mod layer;
 pub mod score;
 
 pub use unlace_ir as ir;
