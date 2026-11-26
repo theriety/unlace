@@ -17,6 +17,7 @@
 mod containers;
 mod dynamic;
 mod edges;
+mod imports;
 mod module_objects;
 mod polarity;
 mod public_api;
@@ -33,6 +34,7 @@ use unlace_ir::{
 
 use self::containers::ContainerBuilder;
 use self::edges::emit_edges;
+use self::imports::emit_imports;
 use self::module_objects::exempt_module_objects;
 use self::polarity::{apply_polarity, classify_polarity, mark_test_source};
 use self::public_api::mark_public_api;
@@ -115,6 +117,7 @@ pub(super) fn bind(modules: &[ParsedModule], root: &Path) -> IrFragment {
     let polarity = classify_polarity(modules, &nodes, &local, &exported, &edges);
     apply_polarity(&mut nodes, &polarity);
     mark_public_api(&mut nodes, modules, &local);
+    let import_facts = emit_imports(modules, &resolver);
 
     IrFragment {
         nodes,
@@ -126,10 +129,10 @@ pub(super) fn bind(modules: &[ParsedModule], root: &Path) -> IrFragment {
         advisory_uses: Vec::new(),
         file_facts: crate::pairs::file_facts(modules),
         test_support_roots: Vec::new(),
-        // this adapter does not state its file imports yet.
-        imports: Vec::new(),
-        states_imports: false,
-        files_without_imports: Vec::new(),
+        imports: import_facts.imports,
+        // every file's imports are stated except the gaps listed beside them.
+        states_imports: true,
+        files_without_imports: import_facts.gaps,
         unordered_imports: false,
     }
 }
@@ -177,6 +180,7 @@ mod tests {
             declarations: Vec::new(),
             imports: Vec::new(),
             conditional_imports: Vec::new(),
+            import_sites: Vec::new(),
             lazy_loading: false,
             dunder_all: Vec::new(),
             dunder_all_form: DunderAllForm::Absent,
@@ -663,6 +667,35 @@ mod tests {
             .collect();
         // `__all__` limits the star surface to `public` only.
         assert_eq!(dynamic.len(), 1, "only the __all__ surface is pulled in");
+        assert!(
+            dynamic.iter().all(|edge| edge.fan_out),
+            "a star import loads the whole surface: {dynamic:?}"
+        );
+    }
+
+    #[test]
+    fn should_not_mark_a_static_import_edge_fan_out() {
+        let mut consumer = module_at("pkg/app.py");
+        consumer.imports.push(Import {
+            module: SmolStr::new("pkg.api"),
+            level: 0,
+            names: vec![SmolStr::new("public")],
+            targets: vec![SmolStr::new("public")],
+            star: false,
+            aliases: Vec::new(),
+        });
+        consumer.declarations.push(caller("run", &["public"]));
+        let mut provider = module_at("pkg/api.py");
+        provider.declarations.push(leaf("public"));
+
+        let fragment = bind(&[consumer, provider], Path::new("repo"));
+
+        let marks: Vec<(f64, bool)> = fragment
+            .edges
+            .iter()
+            .map(|edge| (edge.confidence, edge.fan_out))
+            .collect();
+        assert_eq!(marks, [(CONFIDENCE_STATIC, false)], "{:?}", fragment.edges);
     }
 
     #[test]
@@ -719,6 +752,10 @@ mod tests {
             .filter(|edge| edge.confidence.to_bits() == CONFIDENCE_DYNAMIC.to_bits())
             .collect();
         assert_eq!(dynamic.len(), 1);
+        assert!(
+            dynamic.iter().all(|edge| !edge.fan_out),
+            "a getattr names a known binding, so it is not a fan-out: {dynamic:?}"
+        );
     }
 
     #[test]
@@ -744,8 +781,8 @@ mod tests {
         // edge is below full confidence.
         assert_eq!(dynamic.len(), 1, "only the __all__ surface is pulled in");
         assert_eq!(
-            dynamic.first().map(|edge| edge.kind),
-            Some(EdgeKind::ValueImport)
+            dynamic.first().map(|edge| (edge.kind, edge.fan_out)),
+            Some((EdgeKind::ValueImport, true))
         );
     }
 
@@ -909,6 +946,22 @@ mod tests {
                 ("_unused", Polarity::Production),
                 ("test_assist", Polarity::TestCase),
             ]
+        );
+    }
+
+    #[test]
+    fn should_skip_the_self_loop_of_a_module_loading_itself_through_import_module() {
+        let mut module = module_at("pkg/app.py");
+        let mut loader = leaf("load");
+        loader.dynamic = vec![DynamicRef::ImportModule(SmolStr::new("pkg.app"))];
+        module.declarations.push(loader);
+        module.declarations.push(leaf("other"));
+
+        let fragment = bind(&[module], Path::new("repo"));
+
+        assert_eq!(
+            edge_names(&fragment),
+            [("load".to_owned(), "other".to_owned(), EdgeKind::ValueImport)]
         );
     }
 }

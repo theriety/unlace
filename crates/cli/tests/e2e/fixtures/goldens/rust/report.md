@@ -1,7 +1,7 @@
 # Unlace report — rust
 
 1 files · 5 symbols · 5 edges
-Snapshot `3ec124aef726cd373cd07cef35f2d255e957969164163ca3d3cdabbb948a2296`
+Snapshot `662fddbdff9d1401b7fadbbbde59d060068fbdc9ae36e4d552be588aa72a64e1`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 ## Structural findings

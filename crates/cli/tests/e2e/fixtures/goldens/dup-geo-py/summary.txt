@@ -1,11 +1,12 @@
 Unlace report — dup-geo-py
-6 files · 12 symbols · 8 edges
-Snapshot `3afb1994fa239f31445daa92f3c79838f47b45bca1c3d3cb25fb3aa392f3ac87`
+6 files · 12 symbols · 15 edges
+Snapshot `9fa7cfe8b4930139524f20987f05f827f9d8f19b0345bec359ca662c6e2abb1b`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 Structural findings
-Shared findings (0)
-  None.
+Shared findings (1)
+  - testOnly [violation] at `dup-geo-py/app.py`, `run`: Only tests in this repo use `run`. It is
+    public, so code outside this repo may use it too; check before moving or deleting it.
 
 anchored profile-specific findings (0)
   None.
@@ -19,32 +20,40 @@ candidate is a proposed layout; inclusion does not make a move Recommended. Part
 rescored.
 
 anchored — 0 candidate(s)
-Baseline score: 0.0685
+Baseline score: 0.1474
 Fewer than the requested candidates survived; the solution space converged.
 Current layout is already optimal under this profile's search.
 No candidates were produced.
 
 greenfield — 1 candidate(s)
-Baseline score: 0.2685
+Baseline score: 0.3474
 Fewer than the requested candidates survived; the solution space converged.
 
 greenfield — candidate 1
-  Score: 0.2685 → 0.2562; improvement +0.0123
+  Score: 0.3474 → 0.2850; improvement +0.0624
   Proposed moves
+    - Move file `dup-geo-py/app.py` → `dup-geo-py/geometry/app.py`
+      Why: pulled toward `dup-geo-py/geometry/rectangle.py` — weight 2.0.
+    - Move symbol `describe` from `dup-geo-py/geometry/rectangle.py` → `dup-geo-py/geometry/app.py`
     - Move type `Shape` from `dup-geo-py/geometry/shape.py` → `dup-geo-py/geometry/rectangle.py`
   Folder impacts
-    No files enter or leave a folder.
+    `dup-geo-py`: 1 file(s) leaving · 0 entering
+    `dup-geo-py/geometry`: 0 file(s) leaving · 1 entering
   Before
     dup-geo-py/
     └── dup-geo-py/
+        ├── app.py *
         └── geometry/
             ├── rectangle.py *
+            │   └── symbol `describe` [to dup-geo-py/geometry/app.py]
             └── shape.py *
                 └── type `Shape` [to dup-geo-py/geometry/rectangle.py]
   After
     dup-geo-py/
     └── dup-geo-py/
         └── geometry/
+            ├── app.py *
+            │   └── symbol `describe` [from dup-geo-py/geometry/rectangle.py]
             ├── rectangle.py *
             │   └── type `Shape` [from dup-geo-py/geometry/shape.py]
             └── shape.py *
@@ -57,7 +66,19 @@ thresholds; absent profiles did not select the move; conflicts name alternative 
 Advice consolidates the best candidate from each executed profile.
  Profiles share analysis-start evidence but apply their own weights and thresholds.
  Recommended (0):
- Review candidate (1):
+ Review candidate (3):
+   - file `dup-geo-py/app.py` → `dup-geo-py/geometry` · supporting [greenfield] · qualified [] ·
+   absent [anchored] · conflicts []
+     review reasons: selected by only some executed profiles, destination evidence is below the
+     configured minimum, structural evidence is insufficient, the destination is not sufficiently
+     stronger than the best alternative, no strict majority of executed profiles provides
+     qualifying support for this destination
+   - symbol `describe` from `dup-geo-py/geometry/rectangle.py` → `dup-geo-py/app.py` · supporting
+   [greenfield] · qualified [] · absent [anchored] · conflicts []
+     review reasons: selected by only some executed profiles, destination evidence is below the
+     configured minimum, structural evidence is insufficient, the destination is not sufficiently
+     stronger than the best alternative, no strict majority of executed profiles provides
+     qualifying support for this destination
    - type `Shape` from `dup-geo-py/geometry/shape.py` → `dup-geo-py/geometry/rectangle.py` ·
    supporting [greenfield] · qualified [] · absent [anchored] · conflicts []
      review reasons: selected by only some executed profiles, destination evidence is below the

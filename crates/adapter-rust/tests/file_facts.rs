@@ -134,7 +134,11 @@ fn should_name_the_start_of_a_target_whose_root_is_not_yet_on_disk() -> Result<(
     assert_eq!(
         fragment.file_facts,
         vec![
-            FileFact::entry_file("src/lib.rs"),
+            // the crate root is also the module entry of its own directory.
+            FileFact {
+                entry_of: Some("src".into()),
+                ..FileFact::entry_file("src/lib.rs")
+            },
             FileFact::entry_with_start("src/tool.rs", "main"),
         ]
     );

@@ -394,7 +394,16 @@ fn should_follow_an_absolute_self_import_of_a_src_layout() -> Result<(), String>
         ("src/pkg/api.py", "def serve() -> int:\n    return 1\n"),
     ])?;
 
-    assert_eq!(public, ["src/pkg/_impl.py:Widget", "src/pkg/api.py:serve"]);
+    // the self-import resolves through the src-layout name `pkg._impl`, so
+    // the package re-exports `Widget` like any `from ._impl import Widget`.
+    assert_eq!(
+        public,
+        [
+            "src/pkg/__init__.py:Widget",
+            "src/pkg/_impl.py:Widget",
+            "src/pkg/api.py:serve"
+        ]
+    );
     Ok(())
 }
 

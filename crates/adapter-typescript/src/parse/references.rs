@@ -21,6 +21,14 @@ pub(super) struct References {
     /// Whether an `import()` or `require()` takes a target that is not a string
     /// literal.
     pub(super) opaque_loads: bool,
+    /// Runtime names read when the subtree runs at module load, outside every
+    /// function, method and instance-property body and every type position.
+    pub(super) eager: Vec<SmolStr>,
+    /// Runtime names read anywhere in the subtree outside a type position.
+    pub(super) runtime: Vec<SmolStr>,
+    /// Whether a class body in the subtree reads `this` or `super` in code
+    /// that runs at module load, so it may call its own deferred members then.
+    pub(super) reads_this_at_load: bool,
 }
 
 /// Collects references from a class body.
@@ -36,6 +44,16 @@ pub(super) fn collect_function(function: &swc_ecma_ast::Function) -> References 
 /// Collects references from a variable initializer.
 pub(super) fn collect_expression(expression: &Expr) -> References {
     collect(expression)
+}
+
+/// Collects references from one top-level statement.
+pub(super) fn collect_statement(statement: &Stmt) -> References {
+    collect(statement)
+}
+
+/// Collects references from a namespace's body, leaving out its name.
+pub(super) fn collect_namespace(namespace: &swc_ecma_ast::TsModuleDecl) -> References {
+    collect(&namespace.body)
 }
 
 /// Collects references from top-level executable statements in source order.
@@ -103,5 +121,59 @@ fn pattern_type_annotation(pattern: &Pat) -> Option<&swc_ecma_ast::TsTypeAnn> {
         other => other
             .as_assign()
             .and_then(|assign| pattern_type_annotation(&assign.left)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use swc_common::{FileName, SourceMap, sync::Lrc};
+    use swc_ecma_ast::{Decl, ModuleItem};
+    use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
+
+    use super::*;
+
+    /// The load-time reads of the first class declared in `source`, parsed
+    /// with decorators enabled: the adapter's own parser keeps them disabled,
+    /// so this is the only way to reach the dormant decorator handling.
+    fn decorated_class_eager(source: &str) -> Result<Vec<SmolStr>, String> {
+        let source_map: Lrc<SourceMap> = Lrc::default();
+        let file = source_map.new_source_file(
+            Lrc::new(FileName::Custom("decorated.ts".to_owned())),
+            source.to_owned(),
+        );
+        let lexer = Lexer::new(
+            Syntax::Typescript(TsSyntax {
+                decorators: true,
+                ..TsSyntax::default()
+            }),
+            swc_ecma_ast::EsVersion::default(),
+            StringInput::from(&*file),
+            None,
+        );
+        let module = Parser::new_from(lexer)
+            .parse_module()
+            .map_err(|error| format!("{error:?}"))?;
+        let class = module
+            .body
+            .iter()
+            .find_map(|item| match item {
+                ModuleItem::Stmt(Stmt::Decl(Decl::Class(class))) => Some(&class.class),
+                _ => None,
+            })
+            .ok_or_else(|| "expected a class declaration".to_owned())?;
+        let mut eager = collect_class(class).eager;
+        eager.sort();
+        eager.dedup();
+        Ok(eager)
+    }
+
+    #[test]
+    fn should_read_a_member_decorator_where_its_class_definition_runs() -> Result<(), String> {
+        let eager = decorated_class_eager(
+            "class C {\n  @logged\n  run() {\n    return later();\n  }\n  constructor(@inject dep: number) {}\n}\n",
+        )?;
+
+        assert_eq!(eager, [SmolStr::new("inject"), SmolStr::new("logged")]);
+        Ok(())
     }
 }

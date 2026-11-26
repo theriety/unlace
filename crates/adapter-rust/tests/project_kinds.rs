@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use unlace_adapter_rust::RustAdapter;
-use unlace_ir::{Adapter, AdapterError, SourceFile};
+use unlace_ir::{Adapter, AdapterError, FileFact, SourceFile};
 
 #[test]
 fn should_bind_a_rust_project_json_with_no_targets_and_every_root_a_library() -> Result<(), String>
@@ -24,7 +24,11 @@ fn should_bind_a_rust_project_json_with_no_targets_and_every_root_a_library() ->
 
     // with no cargo targets there are no entry files and no test-support crates,
     // while the unknown crate kind counts as a library whose `pub` item is API.
-    assert!(fragment.file_facts.is_empty(), "{:?}", fragment.file_facts);
+    // The module tree still makes `src/lib.rs` the entry of its directory.
+    assert_eq!(
+        fragment.file_facts,
+        vec![FileFact::entry_of_folder("src/lib.rs", "src")]
+    );
     assert!(fragment.test_support_roots.is_empty());
     let exported = fragment.nodes.iter().find(|node| node.name == "exported");
     assert_eq!(exported.map(|node| node.public_api), Some(true));

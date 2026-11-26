@@ -8,8 +8,12 @@
 //!
 //! Entry files are `__main__.py` (what `python -m pkg` runs) and a top-level
 //! `setup.py`. Everything else is not an entry: when unsure, it is not one.
+//!
+//! A package initializer `pkg/__init__.py` is the module entry of its folder,
+//! stated as `entry_of = "pkg"`, which only the import-cycle cut reads. A root
+//! `__init__.py` has no folder above it, so it states none.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use smol_str::SmolStr;
 use unlace_ir::{FileFact, unique_test_pairs};
@@ -26,15 +30,32 @@ pub(super) fn file_facts(modules: &[ParsedModule]) -> Vec<FileFact> {
         let (root, dir, stem) = split_source(path)?;
         Some((SmolStr::new(path), test_paths(root, dir, stem)))
     });
-    let mut facts = unique_test_pairs(candidates, &present);
-    facts.extend(
-        present
-            .iter()
-            .filter(|path| is_entry(path))
-            .map(|path| FileFact::entry_file(*path)),
-    );
-    facts.sort();
-    facts
+    let mut facts: BTreeMap<SmolStr, FileFact> = unique_test_pairs(candidates, &present)
+        .into_iter()
+        .map(|fact| (fact.file.clone(), fact))
+        .collect();
+    for path in present.iter().filter(|path| is_entry(path)) {
+        facts
+            .entry(SmolStr::new(path))
+            .or_insert_with(|| FileFact::entry_file(*path))
+            .entry = true;
+    }
+    for (path, folder) in present
+        .iter()
+        .filter_map(|path| package_folder(path).map(|folder| (*path, folder)))
+    {
+        facts
+            .entry(SmolStr::new(path))
+            .or_insert_with(|| FileFact::entry_of_folder(path, folder))
+            .entry_of = Some(SmolStr::new(folder));
+    }
+    facts.into_values().collect()
+}
+
+/// The folder `pkg` whose initializer `pkg/__init__.py` is, or `None` for any
+/// other file and for a root `__init__.py`.
+fn package_folder(path: &str) -> Option<&str> {
+    path.strip_suffix("/__init__.py")
 }
 
 fn is_entry(path: &str) -> bool {

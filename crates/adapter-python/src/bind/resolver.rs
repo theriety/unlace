@@ -1,6 +1,19 @@
 //! Import resolution: dotted module names, relative levels, and `__all__`.
+//!
+//! A module's dotted name is its path from the analysed root. A file below a
+//! source root is also known by its name from that root, because that is how
+//! the package is imported once the root is on the import path. A source root
+//! is a directory that is not itself a package and does not sit inside one
+//! (neither it nor its parent holds an `__init__.py`), and that either is
+//! named `src` (`src/pkg/x.py` or `libs/a/src/pkg/x.py` is `pkg.x`) or
+//! directly holds a top-level package (`backend/app/x.py`, where
+//! `backend/app/__init__.py` exists, is `app.x`). The analysed root is
+//! always one already. The path name wins when both spell the same module,
+//! and an alias two source roots share names no file: an import of it is
+//! first-party but unresolved, so the importing file reports its imports as
+//! not stated instead of hiding a cycle.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use smol_str::SmolStr;
 use unlace_ir::NodeId;
@@ -23,6 +36,9 @@ pub(super) struct Resolver {
     dotted_of: HashMap<SmolStr, SmolStr>,
     /// Source file path -> the names its `__all__` lists, when it lists any.
     surfaces: HashMap<SmolStr, Surface>,
+    /// Source-root aliases that several files claim: first-party names that
+    /// resolve to no file.
+    ambiguous: HashSet<SmolStr>,
 }
 
 /// The names a module lists in `__all__`.
@@ -55,10 +71,12 @@ impl Resolver {
                 );
             }
         }
+        let ambiguous = add_source_root_aliases(modules, &mut by_dotted);
         Self {
             by_dotted,
             dotted_of,
             surfaces,
+            ambiguous,
         }
     }
 
@@ -78,6 +96,40 @@ impl Resolver {
             return None;
         }
         self.by_dotted.get(dotted.as_str()).cloned()
+    }
+
+    /// The absolute dotted name of the module a `from` statement names, for an
+    /// absolute or a relative import alike; `None` when a relative import climbs
+    /// above the importer's top package.
+    pub(super) fn absolute_dotted(&self, importer: &str, import: &Import) -> Option<String> {
+        if import.level == 0 {
+            Some(import.module.to_string())
+        } else {
+            self.relative_dotted(importer, import)
+        }
+    }
+
+    /// Whether the first segment of `dotted` is a top-level name of the analysed
+    /// set; anything else is a package outside it.
+    pub(super) fn is_first_party(&self, dotted: &str) -> bool {
+        let first = dotted.split('.').next().unwrap_or(dotted);
+        self.by_dotted
+            .keys()
+            .chain(&self.ambiguous)
+            .any(|name| !name.is_empty() && name.split('.').next() == Some(first))
+    }
+
+    /// Whether some analysed module lives below `dotted`: a namespace package,
+    /// or a regular package whose own file is not analysed. A name several
+    /// source roots claim is neither: each root holds its own package file.
+    pub(super) fn has_descendants(&self, dotted: &str) -> bool {
+        !self.ambiguous.contains(dotted)
+            && self.by_dotted.keys().any(|name| {
+                (dotted.is_empty() && !name.is_empty())
+                    || name
+                        .strip_prefix(dotted)
+                        .is_some_and(|rest| rest.starts_with('.'))
+            })
     }
 
     /// Computes the absolute dotted name a relative import refers to.
@@ -140,6 +192,77 @@ fn dotted_name(path: &str) -> SmolStr {
             .unwrap_or(without_extension)
     };
     SmolStr::new(trimmed.replace('/', "."))
+}
+
+/// Adds each file's name from every source root above it to `by_dotted`,
+/// unless a path name already spells it, and returns the aliases two files
+/// claim, which are left out.
+fn add_source_root_aliases(
+    modules: &[ParsedModule],
+    by_dotted: &mut HashMap<SmolStr, SmolStr>,
+) -> HashSet<SmolStr> {
+    let packages: HashSet<&str> = modules
+        .iter()
+        .filter(|module| is_package_init(&module.path))
+        .map(|module| parent_dir(&module.path))
+        .collect();
+    let package_holders: HashSet<&str> = packages
+        .iter()
+        .filter(|package| !package.is_empty())
+        .map(|package| parent_dir(package))
+        .collect();
+    let mut claims: BTreeMap<SmolStr, Vec<&SmolStr>> = BTreeMap::new();
+    for module in modules {
+        for below in below_source_roots(&module.path, &packages, &package_holders) {
+            claims
+                .entry(dotted_name(below))
+                .or_default()
+                .push(&module.path);
+        }
+    }
+    let mut ambiguous = HashSet::new();
+    for (alias, paths) in claims {
+        if alias.is_empty() || by_dotted.contains_key(&alias) {
+            continue;
+        }
+        match paths.as_slice() {
+            [path] => {
+                by_dotted.insert(alias, (*path).clone());
+            }
+            _ => {
+                ambiguous.insert(alias);
+            }
+        }
+    }
+    ambiguous
+}
+
+/// The parts of `path` below each source root above it, other than the
+/// analysed root, which every path name is already relative to.
+fn below_source_roots<'a>(
+    path: &'a str,
+    packages: &HashSet<&str>,
+    package_holders: &HashSet<&str>,
+) -> Vec<&'a str> {
+    path.match_indices('/')
+        .filter(|&(end, _)| is_source_root(&path[..end], packages, package_holders))
+        .map(|(end, _)| &path[end + 1..])
+        .collect()
+}
+
+/// Whether `dir` is a source root: not a package and not inside one, and
+/// either named `src` or directly holding a package (which is then a
+/// top-level package).
+fn is_source_root(dir: &str, packages: &HashSet<&str>, package_holders: &HashSet<&str>) -> bool {
+    let named_src = dir.rsplit('/').next() == Some("src");
+    (named_src || package_holders.contains(dir))
+        && !packages.contains(dir)
+        && !packages.contains(parent_dir(dir))
+}
+
+/// The directory holding `path`; `""` (the analysed root) for a top-level one.
+fn parent_dir(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
 /// Maps each locally imported name to its resolved target node.
@@ -211,6 +334,7 @@ mod tests {
             declarations: Vec::new(),
             imports: Vec::new(),
             conditional_imports: Vec::new(),
+            import_sites: Vec::new(),
             lazy_loading: false,
             dunder_all: Vec::new(),
             dunder_all_form: DunderAllForm::Absent,

@@ -1,6 +1,6 @@
 Unlace report — test-heavy-ts
 6 files · 9 symbols · 9 edges
-Snapshot `0ae89d660327a975bb2eab84e51e4ab33f3028cd6175b9fda2cc72d69ddce4f4`
+Snapshot `3d68634a56e15db1c9f9d221eae0bae5d902f892c03d18380df12f5c5618d845`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 Structural findings

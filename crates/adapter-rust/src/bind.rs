@@ -21,6 +21,7 @@ mod dropped_use;
 mod edges;
 mod fallback;
 mod file_facts;
+mod file_imports;
 mod polarity;
 mod public_api;
 mod visibility;
@@ -112,6 +113,7 @@ pub(super) fn bind(
     let advisory_uses = advisory::settle(advisory, &nodes);
     let file_facts = file_facts::file_facts(files, &database, root);
     let test_support_roots = database.test_support_roots(root);
+    let import_facts = file_imports::file_imports(files, &database, workspace_root);
 
     Ok(IrFragment {
         nodes,
@@ -123,11 +125,12 @@ pub(super) fn bind(
         advisory_uses,
         file_facts,
         test_support_roots,
-        // this adapter does not state its file imports yet.
-        imports: Vec::new(),
-        states_imports: false,
-        files_without_imports: Vec::new(),
-        unordered_imports: false,
+        imports: import_facts.imports,
+        // every file's imports are stated except the gaps listed beside them.
+        states_imports: true,
+        files_without_imports: import_facts.gaps,
+        // Rust has no module evaluation order, stated imports or not.
+        unordered_imports: true,
     })
 }
 
@@ -204,6 +207,9 @@ mod tests {
             pub_use: false,
             test_of: None,
             root_main: false,
+            mod_imports: Vec::new(),
+            uses: Vec::new(),
+            paths: Vec::new(),
         }
     }
 
@@ -554,6 +560,9 @@ mod tests {
             pub_use: false,
             test_of: None,
             root_main: false,
+            mod_imports: Vec::new(),
+            uses: Vec::new(),
+            paths: Vec::new(),
         };
         let assignment = NodeAssignment::build(&[file], Path::new("repo"));
 

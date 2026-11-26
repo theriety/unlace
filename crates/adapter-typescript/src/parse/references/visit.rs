@@ -1,7 +1,7 @@
 //! Visitor implementation that records references, calls, and dynamic imports.
 
 use smol_str::SmolStr;
-use swc_ecma_ast::{CallExpr, Callee, Expr, Lit, NewExpr};
+use swc_ecma_ast::{ArrowExpr, CallExpr, Callee, Expr, FnExpr, Lit, NewExpr};
 use swc_ecma_visit::{Visit, VisitWith};
 
 use super::super::specifier;
@@ -17,7 +17,144 @@ impl Visit for ReferenceCollector {
         {
             return;
         }
-        self.referenced.push(SmolStr::new(ident.sym.as_str()));
+        let name = SmolStr::new(ident.sym.as_str());
+        self.record_read(&name);
+        self.referenced.push(name);
+    }
+
+    // Code that runs only once called: function, method, constructor and
+    // accessor bodies, and instance property values.
+
+    fn visit_function(&mut self, function: &swc_ecma_ast::Function) {
+        self.deferred(|references| function.visit_children_with(references));
+    }
+
+    fn visit_arrow_expr(&mut self, arrow: &swc_ecma_ast::ArrowExpr) {
+        self.deferred(|references| arrow.visit_children_with(references));
+    }
+
+    fn visit_constructor(&mut self, constructor: &swc_ecma_ast::Constructor) {
+        self.deferred(|references| constructor.visit_children_with(references));
+    }
+
+    fn visit_getter_prop(&mut self, getter: &swc_ecma_ast::GetterProp) {
+        getter.key.visit_with(self);
+        getter.type_ann.visit_with(self);
+        self.deferred(|references| getter.body.visit_with(references));
+    }
+
+    fn visit_setter_prop(&mut self, setter: &swc_ecma_ast::SetterProp) {
+        setter.key.visit_with(self);
+        self.deferred(|references| {
+            setter.this_param.visit_with(references);
+            setter.param.visit_with(references);
+            setter.body.visit_with(references);
+        });
+    }
+
+    fn visit_class_prop(&mut self, property: &swc_ecma_ast::ClassProp) {
+        property.key.visit_with(self);
+        self.deferred_unless(property.is_static, |references| {
+            property.value.visit_with(references);
+        });
+        property.type_ann.visit_with(self);
+        property.decorators.visit_with(self);
+    }
+
+    fn visit_private_prop(&mut self, property: &swc_ecma_ast::PrivateProp) {
+        property.key.visit_with(self);
+        self.deferred_unless(property.is_static, |references| {
+            property.value.visit_with(references);
+        });
+        property.type_ann.visit_with(self);
+        property.decorators.visit_with(self);
+    }
+
+    fn visit_auto_accessor(&mut self, accessor: &swc_ecma_ast::AutoAccessor) {
+        accessor.key.visit_with(self);
+        self.deferred_unless(accessor.is_static, |references| {
+            accessor.value.visit_with(references);
+        });
+        accessor.type_ann.visit_with(self);
+        accessor.decorators.visit_with(self);
+    }
+
+    // A class definition runs its `extends`, computed keys and static members
+    // where it stands. A `this` or `super` read there may call any member of
+    // the class, deferred bodies included.
+
+    fn visit_class(&mut self, class: &swc_ecma_ast::Class) {
+        let enclosing = std::mem::replace(&mut self.class_depth, self.deferred_depth);
+        self.class_nesting += 1;
+        class.visit_children_with(self);
+        self.class_nesting -= 1;
+        self.class_depth = enclosing;
+    }
+
+    fn visit_this_expr(&mut self, _this: &swc_ecma_ast::ThisExpr) {
+        self.record_this();
+    }
+
+    fn visit_super(&mut self, _super: &swc_ecma_ast::Super) {
+        self.record_this();
+    }
+
+    // Dormant: the parser does not enable decorators, so a decorated file
+    // fails to parse and the run stops before load-order classification; no
+    // decorator reaches this handler today. It is kept, with `class_depth`,
+    // so that enabling decorators classifies them correctly at once: a
+    // decorator runs where its class definition runs, even when it sits on a
+    // method or a constructor parameter inside a deferred body.
+
+    fn visit_decorator(&mut self, decorator: &swc_ecma_ast::Decorator) {
+        let depth = std::mem::replace(&mut self.deferred_depth, self.class_depth);
+        decorator.visit_children_with(self);
+        self.deferred_depth = depth;
+    }
+
+    // Type positions, which TypeScript erases: nothing in them runs.
+
+    fn visit_ts_type(&mut self, ty: &swc_ecma_ast::TsType) {
+        self.erased(|references| ty.visit_children_with(references));
+    }
+
+    fn visit_ts_type_ann(&mut self, annotation: &swc_ecma_ast::TsTypeAnn) {
+        self.erased(|references| annotation.visit_children_with(references));
+    }
+
+    fn visit_ts_type_param_decl(&mut self, params: &swc_ecma_ast::TsTypeParamDecl) {
+        self.erased(|references| params.visit_children_with(references));
+    }
+
+    fn visit_ts_type_param_instantiation(
+        &mut self,
+        arguments: &swc_ecma_ast::TsTypeParamInstantiation,
+    ) {
+        self.erased(|references| arguments.visit_children_with(references));
+    }
+
+    fn visit_ts_expr_with_type_args(&mut self, clause: &swc_ecma_ast::TsExprWithTypeArgs) {
+        self.erased(|references| clause.visit_children_with(references));
+    }
+
+    fn visit_ts_index_signature(&mut self, signature: &swc_ecma_ast::TsIndexSignature) {
+        self.erased(|references| signature.visit_children_with(references));
+    }
+
+    fn visit_ts_interface_decl(&mut self, interface: &swc_ecma_ast::TsInterfaceDecl) {
+        self.erased(|references| interface.visit_children_with(references));
+    }
+
+    fn visit_ts_type_alias_decl(&mut self, alias: &swc_ecma_ast::TsTypeAliasDecl) {
+        self.erased(|references| alias.visit_children_with(references));
+    }
+
+    fn visit_ts_module_decl(&mut self, module: &swc_ecma_ast::TsModuleDecl) {
+        if module.declare {
+            self.erased(|references| module.visit_children_with(references));
+        } else {
+            module.visit_children_with(self);
+        }
     }
 
     fn visit_binding_ident(&mut self, binding: &swc_ecma_ast::BindingIdent) {
@@ -193,6 +330,15 @@ impl Visit for ReferenceCollector {
     }
 
     fn visit_call_expr(&mut self, call: &CallExpr) {
+        if let Callee::Expr(callee) = &call.callee
+            && let Some(function) = function_expr(callee)
+        {
+            // an immediately invoked function runs its body where it stands
+            self.visit_run_where_called(function);
+            self.visit_arguments(&call.args);
+            call.type_args.visit_with(self);
+            return;
+        }
         match &call.callee {
             Callee::Import(_) => {
                 if let Some(first) = call.args.first()
@@ -220,14 +366,70 @@ impl Visit for ReferenceCollector {
             }
             Callee::Super(_) => {}
         }
-        call.visit_children_with(self);
+        call.callee.visit_with(self);
+        self.visit_arguments(&call.args);
+        call.type_args.visit_with(self);
     }
 
     fn visit_new_expr(&mut self, new: &NewExpr) {
         if let Expr::Ident(ident) = new.callee.as_ref() {
             self.called.push(SmolStr::new(ident.sym.as_str()));
         }
-        new.visit_children_with(self);
+        new.callee.visit_with(self);
+        if let Some(args) = &new.args {
+            self.visit_arguments(args);
+        }
+        new.type_args.visit_with(self);
+    }
+}
+
+impl ReferenceCollector {
+    /// Visits call arguments. A function or arrow passed straight in is read
+    /// where the call runs: `list.map(x => g(x))` at the top level calls `g`
+    /// as the module loads. A callee that stores the callback for later
+    /// (`setTimeout`, an event listener) is over-reported as load time, which
+    /// keeps the conservative reading.
+    fn visit_arguments(&mut self, args: &[swc_ecma_ast::ExprOrSpread]) {
+        for arg in args {
+            match function_expr(&arg.expr) {
+                Some(function) => self.visit_run_where_called(function),
+                None => arg.visit_with(self),
+            }
+        }
+    }
+
+    /// Visits a function or arrow expression as code that runs at the current
+    /// depth rather than once called later.
+    fn visit_run_where_called(&mut self, function: FunctionExpr<'_>) {
+        match function {
+            FunctionExpr::Arrow(arrow) => arrow.visit_children_with(self),
+            FunctionExpr::Function(function) => {
+                function.ident.visit_with(self);
+                function.function.visit_children_with(self);
+            }
+        }
+    }
+}
+
+/// A function or arrow expression, the two kinds of code that can run where
+/// a call stands.
+#[derive(Clone, Copy)]
+enum FunctionExpr<'a> {
+    Arrow(&'a ArrowExpr),
+    Function(&'a FnExpr),
+}
+
+/// The function or arrow `expr` is, through any parentheses: the callee of
+/// an immediately invoked function, or a callback passed straight to a call.
+fn function_expr(expr: &Expr) -> Option<FunctionExpr<'_>> {
+    let mut expr = expr;
+    while let Expr::Paren(paren) = expr {
+        expr = paren.expr.as_ref();
+    }
+    match expr {
+        Expr::Arrow(arrow) => Some(FunctionExpr::Arrow(arrow)),
+        Expr::Fn(function) => Some(FunctionExpr::Function(function)),
+        _ => None,
     }
 }
 

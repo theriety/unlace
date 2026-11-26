@@ -9,6 +9,11 @@
 //! library, binary, example, integration-test, bench and build-script root.
 //! A project whose targets are unknown has no entries.
 //!
+//! Entry folders come from the module tree: `mod.rs` and a `lib.rs` or
+//! `main.rs` crate root are the entry of their own directory, and `foo.rs` of
+//! `foo/` once it declares a child module file there. Only the import-cycle
+//! cut reads them.
+//!
 //! The start symbol is a root-level `fn main` of a program-starting target
 //! (binary, example, test, bench or build script, never a library); a `main`
 //! in a library or inside a nested module is an ordinary function.
@@ -20,7 +25,7 @@ use smol_str::SmolStr;
 use unlace_ir::FileFact;
 
 use super::database::Database;
-use crate::parse::ParsedFile;
+use crate::parse::{ParsedFile, entry_folder};
 
 /// The name of a Rust program's start function.
 const START_NAME: &str = "main";
@@ -49,6 +54,16 @@ pub(super) fn file_facts(files: &[ParsedFile], database: &Database, root: &Path)
             }
         })
     }));
+    for file in files {
+        let Some(folder) = entry_folder(&file.path, &file.mod_imports) else {
+            continue;
+        };
+        // one fact per file: a crate root's entry fact also names its folder.
+        match facts.iter_mut().find(|fact| fact.file == file.path) {
+            Some(fact) => fact.entry_of = Some(folder),
+            None => facts.push(FileFact::entry_of_folder(file.path.clone(), folder)),
+        }
+    }
     facts.sort();
     facts
 }

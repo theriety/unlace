@@ -101,3 +101,186 @@ fn should_record_no_entry_files() {
 fn should_not_pair_a_source_root_file_without_an_extension() {
     assert_eq!(facts(&["src/foo", "src/foo.spec.ts"]), Vec::new());
 }
+
+fn companion(file: &str, folder: &str) -> FileFact {
+    FileFact::folder_companion(file, folder)
+}
+
+#[test]
+fn should_state_a_root_level_companion_for_every_module_extension() {
+    assert_eq!(
+        facts(&[
+            "a.ts",
+            "a/x.ts",
+            "src/b.tsx",
+            "src/b/x.ts",
+            "src/c.mts",
+            "src/c/x.ts",
+        ]),
+        vec![
+            companion("a.ts", "a"),
+            companion("src/b.tsx", "src/b"),
+            companion("src/c.mts", "src/c"),
+        ]
+    );
+}
+
+#[test]
+fn should_state_no_companion_when_the_folder_has_its_own_index() {
+    // the index, not the module beside the folder, is the folder's entry
+    assert_eq!(
+        facts(&["src/block.ts", "src/block/index.ts", "src/block/leaf.ts"]),
+        vec![entry("src/block/index.ts", "src/block")]
+    );
+}
+
+fn entry(file: &str, folder: &str) -> FileFact {
+    FileFact::entry_of_folder(file, folder)
+}
+
+#[test]
+fn should_state_an_index_module_as_its_folders_entry_for_every_extension() {
+    assert_eq!(
+        facts(&[
+            "src/a/index.ts",
+            "src/b/index.tsx",
+            "src/c/index.mts",
+            "src/d/index.cts",
+            "src/e/index.js",
+            "src/f/index.jsx",
+            "src/g/index.mjs",
+            "src/h/index.cjs",
+        ]),
+        vec![
+            entry("src/a/index.ts", "src/a"),
+            entry("src/b/index.tsx", "src/b"),
+            entry("src/c/index.mts", "src/c"),
+            entry("src/d/index.cts", "src/d"),
+            entry("src/e/index.js", "src/e"),
+            entry("src/f/index.jsx", "src/f"),
+            entry("src/g/index.mjs", "src/g"),
+            entry("src/h/index.cjs", "src/h"),
+        ]
+    );
+}
+
+#[test]
+fn should_state_no_entry_for_a_non_index_module_or_a_root_level_index() {
+    assert_eq!(
+        facts(&[
+            "index.ts",
+            "src/geometry/shape.ts",
+            "src/geometry/indexer.ts"
+        ]),
+        Vec::<FileFact>::new()
+    );
+}
+
+#[test]
+fn should_state_no_entry_when_a_folder_holds_two_index_modules() {
+    assert_eq!(
+        facts(&["src/a/index.ts", "src/a/index.tsx"]),
+        Vec::<FileFact>::new()
+    );
+}
+
+#[test]
+fn should_state_the_entry_of_an_index_module_but_not_of_its_test() {
+    assert_eq!(
+        facts(&["src/a/index.ts", "src/a/index.spec.ts"]),
+        vec![
+            pair("src/a/index.spec.ts", "src/a/index.ts"),
+            entry("src/a/index.ts", "src/a"),
+        ]
+    );
+}
+
+#[test]
+fn should_state_nothing_when_two_modules_share_the_stem() {
+    assert_eq!(
+        facts(&["src/block.ts", "src/block.tsx", "src/block/leaf.ts"]),
+        Vec::<FileFact>::new()
+    );
+}
+
+#[test]
+fn should_state_nothing_when_the_folder_holds_no_analysed_module() {
+    assert_eq!(
+        facts(&["src/block.ts", "src/block/logo.svg", "src/other/leaf.ts"]),
+        Vec::<FileFact>::new()
+    );
+}
+
+#[test]
+fn should_give_a_paired_spec_its_mirrored_companion_folder() {
+    assert_eq!(
+        facts(&[
+            "src/lexer/block.ts",
+            "src/lexer/block/leaf.ts",
+            "spec/lexer/block.spec.ts",
+            "spec/lexer/block/leaf.spec.ts",
+        ]),
+        vec![
+            FileFact {
+                folder_companion: Some(SmolStr::new("spec/lexer/block")),
+                ..pair("spec/lexer/block.spec.ts", "src/lexer/block.ts")
+            },
+            pair("spec/lexer/block/leaf.spec.ts", "src/lexer/block/leaf.ts"),
+            companion("src/lexer/block.ts", "src/lexer/block"),
+        ]
+    );
+}
+
+#[test]
+fn should_give_a_paired_spec_no_companion_when_its_mirror_folder_is_absent() {
+    assert_eq!(
+        facts(&[
+            "src/lexer/block.ts",
+            "src/lexer/block/leaf.ts",
+            "spec/lexer/block.spec.ts",
+        ]),
+        vec![
+            pair("spec/lexer/block.spec.ts", "src/lexer/block.ts"),
+            companion("src/lexer/block.ts", "src/lexer/block"),
+        ]
+    );
+}
+
+#[test]
+fn should_state_a_companion_at_every_nesting_level() {
+    assert_eq!(
+        facts(&[
+            "src/block.ts",
+            "src/block/mdcx.ts",
+            "src/block/mdcx/body.ts"
+        ]),
+        vec![
+            companion("src/block.ts", "src/block"),
+            companion("src/block/mdcx.ts", "src/block/mdcx"),
+        ]
+    );
+}
+
+#[test]
+fn should_give_a_paired_spec_the_folder_named_after_the_spec_itself() {
+    // `a.spec.ts` sits beside its own helper folder `a.spec/`
+    assert_eq!(
+        facts(&["src/a.ts", "src/a.spec.ts", "src/a.spec/helper.ts"]),
+        vec![FileFact {
+            folder_companion: Some(SmolStr::new("src/a.spec")),
+            ..pair("src/a.spec.ts", "src/a.ts")
+        }]
+    );
+}
+
+#[test]
+fn should_state_both_facts_of_an_index_module_beside_a_folder_named_index() {
+    // `a/index.ts` enters `a/` and is also the companion of `a/index/`
+    assert_eq!(
+        facts(&["src/a/index.ts", "src/a/index/leaf.ts"]),
+        vec![FileFact {
+            entry_of: Some(SmolStr::new("src/a")),
+            ..companion("src/a/index.ts", "src/a/index")
+        }]
+    );
+}

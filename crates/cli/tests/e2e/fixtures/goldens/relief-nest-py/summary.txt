@@ -1,6 +1,6 @@
 Unlace report — relief-nest-py
 24 files · 24 symbols · 22 edges
-Snapshot `b4db93aa03a1314833627f37d9cc254dfd941239a7b829156efd805da75d3a2f`
+Snapshot `52898d4b04790b6323d0636f96581d8bb12cf14f504f562cf370c1abdb29bdb3`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 Structural findings

@@ -1,7 +1,7 @@
 # Unlace report — workspace-rust
 
 3 files · 13 symbols · 19 edges
-Snapshot `c5126224e3cef82c9daf190aa8358c3db63d8f8bf433d81b7d04410d253d7cb3`
+Snapshot `69ba020e3d436752d774b1db8a18f6a0577971f6bb2fb47c72b711e04714c399`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 ## Structural findings

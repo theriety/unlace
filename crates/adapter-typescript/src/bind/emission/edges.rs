@@ -206,16 +206,26 @@ fn emit_dynamic_imports(
             continue;
         };
         for &target in target_exports.values() {
-            push_edge(
-                edges,
-                source,
-                target,
-                EdgeKind::ValueImport,
-                Hardness::Hard,
-                CONFIDENCE_DYNAMIC,
-            );
+            push_fan_out_edge(edges, source, target);
         }
     }
+}
+
+/// Appends one edge of a dynamic `import('...')`'s fan-out over its target's
+/// exports, marked [`Edge::fan_out`]: it shows the module is loaded, not which
+/// export the importer uses. Self-loops are skipped as in [`push_edge`].
+fn push_fan_out_edge(edges: &mut Vec<Edge>, source: NodeId, target: NodeId) {
+    if source == target {
+        return;
+    }
+    edges.push(Edge {
+        source,
+        target,
+        kind: EdgeKind::ValueImport,
+        hardness: Hardness::Hard,
+        confidence: CONFIDENCE_DYNAMIC,
+        fan_out: true,
+    });
 }
 
 /// Appends an edge, skipping self-loops which carry no dependency information.
