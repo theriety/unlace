@@ -346,6 +346,7 @@ mod tests {
             kind,
             hardness,
             confidence: 1.0,
+            fan_out: false,
         }
     }
 

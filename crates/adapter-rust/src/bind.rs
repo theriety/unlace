@@ -123,6 +123,11 @@ pub(super) fn bind(
         advisory_uses,
         file_facts,
         test_support_roots,
+        // this adapter does not state its file imports yet.
+        imports: Vec::new(),
+        states_imports: false,
+        files_without_imports: Vec::new(),
+        unordered_imports: false,
     })
 }
 
@@ -410,6 +415,7 @@ mod tests {
             kind: EdgeKind::Call,
             hardness: Hardness::Hard,
             confidence: 1.0,
+            fan_out: false,
         }];
 
         classify_polarity(&[], &mut nodes, &edges);
@@ -485,6 +491,7 @@ mod tests {
                 kind: EdgeKind::Call,
                 hardness: Hardness::Hard,
                 confidence: 1.0,
+                fan_out: false,
             },
             Edge {
                 source: NodeId(2),
@@ -492,6 +499,7 @@ mod tests {
                 kind: EdgeKind::Call,
                 hardness: Hardness::Hard,
                 confidence: 1.0,
+                fan_out: false,
             },
         ];
 
@@ -608,6 +616,7 @@ mod tests {
                 kind: EdgeKind::Call,
                 hardness: Hardness::Soft,
                 confidence: 0.6,
+                fan_out: false,
             },
             Edge {
                 source: NodeId(0),
@@ -615,6 +624,7 @@ mod tests {
                 kind: EdgeKind::Call,
                 hardness: Hardness::Hard,
                 confidence: 1.0,
+                fan_out: false,
             },
         ];
 
@@ -681,6 +691,7 @@ mod tests {
             kind: EdgeKind::Call,
             hardness: Hardness::Hard,
             confidence: 1.0,
+            fan_out: false,
         }];
 
         classify_polarity(&[], &mut nodes, &edges);
@@ -699,6 +710,7 @@ mod tests {
             kind: EdgeKind::Call,
             hardness: Hardness::Soft,
             confidence,
+            fan_out: false,
         };
 
         for edges in [vec![soft(0.4), soft(0.6)], vec![soft(0.6), soft(0.4)]] {

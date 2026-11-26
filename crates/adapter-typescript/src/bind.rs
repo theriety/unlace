@@ -141,6 +141,11 @@ pub(super) fn bind(
         advisory_uses: Vec::new(),
         file_facts: crate::pairs::file_facts(modules),
         test_support_roots: Vec::new(),
+        // this adapter does not state its file imports yet.
+        imports: Vec::new(),
+        states_imports: false,
+        files_without_imports: Vec::new(),
+        unordered_imports: false,
     }
 }
 

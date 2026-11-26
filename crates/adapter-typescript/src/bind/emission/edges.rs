@@ -236,5 +236,6 @@ pub(super) fn push_edge(
         kind,
         hardness,
         confidence,
+        fan_out: false,
     });
 }

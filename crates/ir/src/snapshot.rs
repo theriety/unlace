@@ -12,15 +12,24 @@ use crate::node::{Node, NodeId, ScopeLevel};
 
 /// Current IR schema version, bumped on any contract change.
 ///
-/// Version 3 added [`Node::re_export`] (ADR-20). Additive default-empty sidecar
-/// fields such as `scope_ladders` do not bump it (ADR-24, ADR-25).
-pub const SCHEMA_VERSION: u32 = 3;
+/// Version 3 added [`Node::re_export`] (ADR-20). Version 4 added
+/// [`FileFact::folder_companion`](crate::FileFact::folder_companion), the
+/// file-import facts and their coverage, because an IR without them must read
+/// as "imports not stated" rather than "no imports". Additive default-empty
+/// sidecar fields such as `scope_ladders` do not bump it (ADR-24, ADR-25);
+/// nor do the schema-4 additions made before its release:
+/// [`FileImport::load_order`](crate::FileImport::load_order),
+/// [`FileFact::entry_of`](crate::FileFact::entry_of) and
+/// [`IntermediateRepresentation::unordered_files`], each of which reads its
+/// conservative default when absent.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Oldest IR schema version this build still reads.
 ///
-/// A version-2 IR carries no [`Node::re_export`] flag; [`Snapshot::assemble`]
-/// upgrades it by deriving the flag from the re-export edges that version 2
-/// used to mark a re-export.
+/// [`Snapshot::assemble`] upgrades an older IR: a version-2 IR carries no
+/// [`Node::re_export`] flag, so the flag is derived from the re-export edges
+/// that version 2 used to mark a re-export; a version-2 or version-3 IR states
+/// no imports, so every file's imports read as unavailable.
 pub const MIN_SCHEMA_VERSION: u32 = 2;
 
 /// The raw, unvalidated typed graph plus its laminar container tree.
@@ -46,9 +55,10 @@ pub struct IntermediateRepresentation {
     /// score or move does (ADR-25). Added to schema 3; empty when absent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisory_uses: Vec<crate::AdvisoryUse>,
-    /// Adapter-stated test pairs and entry files, merged from every fragment.
-    /// Pairs are language facts the engine reads before any user rule; an
-    /// entry file never moves. Added to schema 3; empty when absent.
+    /// Adapter-stated test pairs, entry files and folder companions, merged
+    /// from every fragment. Pairs are language facts the engine reads before
+    /// any user rule; an entry file never moves. Added to schema 3 (folder
+    /// companions in schema 4); empty when absent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_facts: Vec<crate::FileFact>,
     /// Repo-relative directories of test-support crates (harnesses no other
@@ -56,6 +66,23 @@ pub struct IntermediateRepresentation {
     /// items under them. Added to schema 3; empty when absent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_support_roots: Vec<smol_str::SmolStr>,
+    /// Adapter-stated file imports, merged from every fragment whose adapter
+    /// states its imports (the merge drops the rest), so every importer is in
+    /// `import_coverage`. Added to schema 4; empty when absent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<crate::FileImport>,
+    /// Repo-relative files whose adapter stated their imports, so that a file
+    /// listed here with no entry in `imports` imports nothing, while a file
+    /// missing from it has unknown imports. Empty after upgrading a schema 2
+    /// or 3 IR. Added to schema 4; empty when absent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub import_coverage: Vec<smol_str::SmolStr>,
+    /// Repo-relative files whose language has no module evaluation order
+    /// (Rust), whether or not their imports are stated. A cycle through only
+    /// such files cannot fail at load time, even when its imports are
+    /// unavailable. Empty after upgrading a schema 2 or 3 IR, and when absent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unordered_files: Vec<smol_str::SmolStr>,
 }
 
 /// What the language's scope ladder says about one declaration (ADR-25).
@@ -94,6 +121,9 @@ impl IntermediateRepresentation {
             advisory_uses: Vec::new(),
             file_facts: Vec::new(),
             test_support_roots: Vec::new(),
+            imports: Vec::new(),
+            import_coverage: Vec::new(),
+            unordered_files: Vec::new(),
         }
     }
 }
@@ -148,21 +178,27 @@ pub enum SnapshotError {
 /// Version 2 had no [`Node::re_export`] flag and marked a re-export only by the
 /// [`EdgeKind::ReExport`] edge it sourced, so the flag is derived from those
 /// edges. A v2 IR has no edge for an alias of a non-node target (`pub use crate
-/// as alias`), so such an alias cannot be flagged here. A current IR is left
-/// untouched.
+/// as alias`), so such an alias cannot be flagged here. Versions 2 and 3 state
+/// no imports, so any import data they carry is dropped and every file's
+/// imports read as unavailable. A current IR is left untouched.
 fn upgrade(ir: &mut IntermediateRepresentation) {
     if ir.schema_version >= SCHEMA_VERSION {
         return;
     }
-    let re_exports: HashSet<NodeId> = ir
-        .edges
-        .iter()
-        .filter(|edge| edge.kind == EdgeKind::ReExport)
-        .map(|edge| edge.source)
-        .collect();
-    for node in &mut ir.nodes {
-        node.re_export |= re_exports.contains(&node.id);
+    if ir.schema_version < 3 {
+        let re_exports: HashSet<NodeId> = ir
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::ReExport)
+            .map(|edge| edge.source)
+            .collect();
+        for node in &mut ir.nodes {
+            node.re_export |= re_exports.contains(&node.id);
+        }
     }
+    ir.imports.clear();
+    ir.import_coverage.clear();
+    ir.unordered_files.clear();
     ir.schema_version = SCHEMA_VERSION;
 }
 
@@ -234,8 +270,8 @@ impl Snapshot {
 
         // Canonicalize so the hash is independent of input order. The edge key is
         // total: parallel edges sharing a (source, target, kind) triple are further
-        // ordered by hardness and the raw bit pattern of confidence, so no input
-        // ordering of duplicate edges can leak into the hash.
+        // ordered by hardness, the raw bit pattern of confidence and the fan-out
+        // marker, so no input ordering of duplicate edges can leak into the hash.
         ir.nodes.sort_by_key(|node| node.id.0);
         ir.edges.sort_by_key(|edge| {
             (
@@ -244,6 +280,7 @@ impl Snapshot {
                 edge.kind,
                 edge.hardness,
                 edge.confidence.to_bits(),
+                edge.fan_out,
             )
         });
         ir.affinities.sort();
@@ -252,6 +289,12 @@ impl Snapshot {
         ir.file_facts.dedup();
         ir.test_support_roots.sort();
         ir.test_support_roots.dedup();
+        ir.imports.sort();
+        ir.imports.dedup();
+        ir.import_coverage.sort();
+        ir.import_coverage.dedup();
+        ir.unordered_files.sort();
+        ir.unordered_files.dedup();
         ir.containers.sort_by_id();
 
         // coverage: unreachable, serde_json only fails on non-string map keys or a failing custom Serialize, and the derived IR holds neither
@@ -272,6 +315,29 @@ impl Snapshot {
     pub fn ir(&self) -> &IntermediateRepresentation {
         &self.ir
     }
+
+    /// Whether the adapter of `file` stated its imports, so its entries in
+    /// [`IntermediateRepresentation::imports`] are complete and an absent
+    /// entry means "imports nothing". When `false`, a cycle finding through
+    /// `file` is unavailable rather than empty: the IR predates schema 4, or
+    /// the file's adapter cannot resolve imports.
+    #[must_use]
+    pub fn imports_available_for(&self, file: &str) -> bool {
+        self.ir
+            .import_coverage
+            .binary_search_by(|covered| covered.as_str().cmp(file))
+            .is_ok()
+    }
+
+    /// Whether the language of `file` has no module evaluation order, so no
+    /// import of it runs at load time, stated or not.
+    #[must_use]
+    pub fn imports_unordered_for(&self, file: &str) -> bool {
+        self.ir
+            .unordered_files
+            .binary_search_by(|unordered| unordered.as_str().cmp(file))
+            .is_ok()
+    }
 }
 
 #[cfg(test)]
@@ -282,7 +348,7 @@ mod tests {
     use crate::container::{Container, ContainerId};
     use crate::edge::{EdgeKind, Hardness};
     use crate::node::{NodeKind, Polarity, ScopeLevel};
-    use crate::{Affinity, AffinityKind};
+    use crate::{Affinity, AffinityKind, FileFact, FileImport, ImportKind, LoadOrder};
 
     fn root_container() -> Container {
         Container {
@@ -320,6 +386,7 @@ mod tests {
             kind: EdgeKind::Call,
             hardness: Hardness::Hard,
             confidence: 1.0,
+            fan_out: false,
         }
     }
 
@@ -332,6 +399,7 @@ mod tests {
             kind: EdgeKind::Call,
             hardness,
             confidence,
+            fan_out: false,
         }
     }
 
@@ -413,6 +481,175 @@ mod tests {
         Ok(())
     }
 
+    /// A schema-3 IR: node 0 is flagged as a re-export and node 1 sources a
+    /// re-export edge without the flag, which version 3 states explicitly.
+    /// It carries import data a version-3 adapter could not have stated.
+    const SCHEMA_3_IR: &str = r#"{
+        "schema_version": 3,
+        "nodes": [
+            {"id": 0, "name": "alias", "kind": "Symbol", "polarity": "Production",
+             "container": 0, "visibility": "Package", "effective_size": 0,
+             "re_export": true},
+            {"id": 1, "name": "original", "kind": "Symbol", "polarity": "Production",
+             "container": 0, "visibility": "Package", "effective_size": 3}
+        ],
+        "edges": [
+            {"source": 1, "target": 0, "kind": "ReExport", "hardness": "Soft", "confidence": 1.0}
+        ],
+        "affinities": [],
+        "containers": {"containers": [
+            {"id": 0, "name": "root", "level": "File", "parent": null}
+        ]},
+        "file_facts": [{"file": "src/a.ts", "entry": true}],
+        "imports": [{"importer": "src/a.ts", "imported": "src/b.ts", "kind": "value",
+                     "specifier": "./b", "line": 1}],
+        "import_coverage": ["src/a.ts"]
+    }"#;
+
+    #[test]
+    fn should_report_imports_unavailable_after_upgrading_a_schema_2_snapshot() -> Result<(), String>
+    {
+        let ir: IntermediateRepresentation =
+            serde_json::from_str(SCHEMA_2_IR).map_err(|error| error.to_string())?;
+
+        let snapshot = Snapshot::assemble(ir).map_err(|error| error.to_string())?;
+
+        assert!(!snapshot.imports_available_for("root"));
+        assert!(snapshot.ir().imports.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn should_load_a_schema_3_snapshot_with_imports_unavailable() -> Result<(), String> {
+        let ir: IntermediateRepresentation =
+            serde_json::from_str(SCHEMA_3_IR).map_err(|error| error.to_string())?;
+
+        let snapshot = Snapshot::assemble(ir).map_err(|error| error.to_string())?;
+
+        let flags: Vec<bool> = snapshot
+            .ir()
+            .nodes
+            .iter()
+            .map(|node| node.re_export)
+            .collect();
+        assert_eq!(snapshot.ir().schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            flags,
+            vec![true, false],
+            "v3 flags are kept, not re-derived"
+        );
+        assert_eq!(
+            snapshot.ir().file_facts,
+            vec![FileFact::entry_file("src/a.ts")]
+        );
+        assert!(
+            snapshot.ir().imports.is_empty(),
+            "stray v3 imports are dropped"
+        );
+        assert!(snapshot.ir().import_coverage.is_empty());
+        assert!(!snapshot.imports_available_for("src/a.ts"));
+        Ok(())
+    }
+
+    /// A schema-4 IR with a folder companion, two imports and a coverage list
+    /// that also names a file importing nothing.
+    fn schema_4_ir() -> IntermediateRepresentation {
+        let mut ir = ir_with(vec![node(0, "a")], vec![]);
+        ir.file_facts = vec![
+            FileFact::folder_companion("src/lexer/block.ts", "src/lexer/block"),
+            FileFact::entry_file("src/index.ts"),
+            FileFact::entry_of_folder("src/main.rs", "src"),
+        ];
+        ir.imports = vec![
+            FileImport {
+                importer: SmolStr::new("src/lexer/block.ts"),
+                imported: SmolStr::new("src/lexer/block/fence.ts"),
+                kind: ImportKind::Value,
+                specifier: SmolStr::new("./block/fence"),
+                line: 2,
+                load_order: LoadOrder::Deferred,
+            },
+            FileImport {
+                importer: SmolStr::new("src/index.ts"),
+                imported: SmolStr::new("src/lexer/block.ts"),
+                kind: ImportKind::SideEffect,
+                specifier: SmolStr::new("./lexer/block"),
+                line: 1,
+                load_order: LoadOrder::Eager,
+            },
+        ];
+        ir.import_coverage = vec![
+            SmolStr::new("src/lexer/block/fence.ts"),
+            SmolStr::new("src/lexer/block.ts"),
+            SmolStr::new("src/index.ts"),
+        ];
+        ir.unordered_files = vec![SmolStr::new("src/util.rs"), SmolStr::new("src/main.rs")];
+        ir
+    }
+
+    #[test]
+    fn should_read_a_file_as_unordered_only_when_its_language_states_it() -> Result<(), String> {
+        let snapshot = Snapshot::assemble(schema_4_ir()).map_err(|error| error.to_string())?;
+
+        assert!(snapshot.imports_unordered_for("src/main.rs"));
+        assert!(snapshot.imports_unordered_for("src/util.rs"));
+        assert!(!snapshot.imports_unordered_for("src/index.ts"));
+        Ok(())
+    }
+
+    #[test]
+    fn should_clear_unordered_files_when_upgrading_a_schema_3_snapshot() -> Result<(), String> {
+        let mut ir: IntermediateRepresentation =
+            serde_json::from_str(SCHEMA_3_IR).map_err(|error| error.to_string())?;
+        ir.unordered_files = vec![SmolStr::new("src/a.ts")];
+
+        let snapshot = Snapshot::assemble(ir).map_err(|error| error.to_string())?;
+
+        assert!(!snapshot.imports_unordered_for("src/a.ts"));
+        Ok(())
+    }
+
+    #[test]
+    fn should_round_trip_a_schema_4_snapshot_with_a_stable_hash() -> Result<(), String> {
+        let snapshot = Snapshot::assemble(schema_4_ir()).map_err(|error| error.to_string())?;
+
+        let json = serde_json::to_string(snapshot.ir()).map_err(|error| error.to_string())?;
+        let restored: IntermediateRepresentation =
+            serde_json::from_str(&json).map_err(|error| error.to_string())?;
+        let reassembled = Snapshot::assemble(restored).map_err(|error| error.to_string())?;
+        let mut reordered = schema_4_ir();
+        reordered.imports.reverse();
+        reordered.import_coverage.reverse();
+        reordered.unordered_files.reverse();
+        let shuffled = Snapshot::assemble(reordered).map_err(|error| error.to_string())?;
+
+        assert_eq!(reassembled, snapshot);
+        assert_eq!(shuffled.hash(), snapshot.hash());
+        Ok(())
+    }
+
+    #[test]
+    fn should_tell_a_file_importing_nothing_from_one_with_unknown_imports() -> Result<(), String> {
+        let snapshot = Snapshot::assemble(schema_4_ir()).map_err(|error| error.to_string())?;
+
+        assert!(snapshot.imports_available_for("src/lexer/block/fence.ts"));
+        assert!(snapshot.imports_available_for("src/index.ts"));
+        assert!(!snapshot.imports_available_for("src/main.rs"));
+        Ok(())
+    }
+
+    #[test]
+    fn should_omit_unstated_imports_from_a_schema_4_snapshot() -> Result<(), String> {
+        let snapshot = Snapshot::assemble(ir_with(vec![node(0, "a")], vec![]))
+            .map_err(|error| error.to_string())?;
+
+        let json = serde_json::to_string(snapshot.ir()).map_err(|error| error.to_string())?;
+
+        assert!(!json.contains("imports"), "{json}");
+        assert!(!json.contains("import_coverage"), "{json}");
+        Ok(())
+    }
+
     #[test]
     fn should_omit_an_unset_re_export_flag_and_round_trip_a_set_one() -> Result<(), String> {
         let original = node(0, "original");
@@ -431,6 +668,44 @@ mod tests {
         assert!(!plain.contains("re_export"), "{plain}");
         assert_eq!(restored, re_export);
         Ok(())
+    }
+
+    #[test]
+    fn should_omit_an_unset_fan_out_marker_and_round_trip_a_set_one() -> Result<(), String> {
+        let plain = edge_with(0, 1, Hardness::Hard, 0.5);
+        let fan_out = Edge {
+            kind: EdgeKind::ValueImport,
+            fan_out: true,
+            ..edge_with(0, 1, Hardness::Hard, 0.5)
+        };
+
+        let plain_json = serde_json::to_string(&plain).or(Err("an edge must serialize"))?;
+        let marked_json = serde_json::to_string(&fan_out).or(Err("an edge must serialize"))?;
+        let restored_plain: Edge =
+            serde_json::from_str(&plain_json).or(Err("an edge must deserialize"))?;
+        let restored_marked: Edge =
+            serde_json::from_str(&marked_json).or(Err("an edge must deserialize"))?;
+
+        assert!(!plain_json.contains("fan_out"), "{plain_json}");
+        assert!(marked_json.contains("\"fan_out\":true"), "{marked_json}");
+        assert_eq!(restored_plain, plain);
+        assert_eq!(restored_marked, fan_out);
+        Ok(())
+    }
+
+    #[test]
+    fn should_hash_identically_for_reordered_parallel_edges_differing_in_fan_out() {
+        let marked = Edge {
+            fan_out: true,
+            ..edge(0, 1)
+        };
+        let forward = ir_with(
+            vec![node(0, "a"), node(1, "b")],
+            vec![edge(0, 1), marked.clone()],
+        );
+        let reverse = ir_with(vec![node(0, "a"), node(1, "b")], vec![marked, edge(0, 1)]);
+
+        assert_eq!(hash_of(forward), hash_of(reverse));
     }
 
     #[test]

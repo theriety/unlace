@@ -282,6 +282,7 @@ mod tests {
             kind: EdgeKind::Call,
             hardness: Hardness::Hard,
             confidence: 1.0,
+            fan_out: false,
         }
     }
 

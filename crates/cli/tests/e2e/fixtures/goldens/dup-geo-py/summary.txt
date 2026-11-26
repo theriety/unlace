@@ -1,6 +1,6 @@
 Unlace report — dup-geo-py
 6 files · 12 symbols · 8 edges
-Snapshot `7364a35529d43a72c0ac21950a5f04412afd2db196c5f6573ae05c847862a57b`
+Snapshot `3afb1994fa239f31445daa92f3c79838f47b45bca1c3d3cb25fb3aa392f3ac87`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 Structural findings

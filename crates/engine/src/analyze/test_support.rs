@@ -93,6 +93,7 @@ pub(in crate::analyze) fn edge(source: u32, target: u32) -> Edge {
         kind: EdgeKind::Call,
         hardness: Hardness::Hard,
         confidence: 1.0,
+        fan_out: false,
     }
 }
 
