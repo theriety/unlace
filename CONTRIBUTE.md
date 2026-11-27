@@ -4,7 +4,7 @@ This guide covers how to build the workspace, run the full test suite, regenerat
 
 ## Toolchain
 
-The workspace pins its toolchain in [`rust-toolchain.toml`](rust-toolchain.toml): Rust `1.96.0` with the `rustfmt` and `clippy` components. `rustup` selects it automatically when you run any `cargo` command inside the repo, so no manual `rustup override` is needed.
+The workspace pins its toolchain in [`rust-toolchain.toml`](rust-toolchain.toml): Rust `1.96.0` with the `rustfmt`, `clippy` and `rust-src` components. rust-analyzer reads the standard library from `rust-src`; without it, the first Rust load would try to install the component itself. `rustup` selects it automatically when you run any `cargo` command inside the repo, so no manual `rustup override` is needed.
 
 Two optional tools make the inner loop faster:
 
