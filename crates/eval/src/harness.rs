@@ -6,9 +6,11 @@
 //! out; nothing reads a golden score. `UNLACE_BLESS_EVAL=1` only regenerates a
 //! diagnostic dump — it never rewrites expectations.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use unlace_engine::config::{AnalyzeConfig, ProfileName};
+use unlace_engine::result::Advice;
 use unlace_engine::{analyze, snapshot_from_root};
 
 use crate::error::EvalError;
@@ -184,8 +186,18 @@ pub fn run_case(
     }
 
     let inputs = inputs::build_inputs(&result, block, expected_fixture)?;
-    let (verdicts, pair_f1) =
+    // Advice pins select by repo-relative path; a drifted path format would
+    // pass every pin as `absent`, so it is a harness defect, never distance.
+    if !block.advice_tier.is_empty() || !block.recommended_guard.is_empty() {
+        errors.extend(advice_drift_error(
+            &result.advice,
+            &inputs.census,
+            expected_fixture,
+        ));
+    }
+    let (mut verdicts, pair_f1) =
         assertions::evaluate_assertions(block, &inputs, spec.reference.as_ref());
+    verdicts.extend(assertions::evaluate_advice(block, &inputs, &result.advice));
     let observations = assertions::observe_modes(&result, &inputs.faces);
 
     let mut report = CaseReport {
@@ -198,6 +210,23 @@ pub fn run_case(
     };
     diagnostics::dump_diagnostics(&result, &mut report);
     Ok(report)
+}
+
+/// The case error naming every advice path outside the fixture census, or
+/// `None` when each one resolves.
+fn advice_drift_error(
+    advice: &Advice,
+    census: &BTreeSet<String>,
+    fixture: &str,
+) -> Option<EvalError> {
+    let drifted = assertions::drifted_advice_paths(advice, census);
+    (!drifted.is_empty()).then(|| EvalError::TargetInvalid {
+        target: fixture.to_owned(),
+        message: format!(
+            "advice names paths outside the fixture census ({}); the advice path format drifted, so every advice pin would pass as absent (harness defect, never distance)",
+            drifted.join(", ")
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -221,6 +250,8 @@ mod tests {
             capacity_relief: Vec::new(),
             non_inversion: Vec::new(),
             preserve_symbol_home: Vec::new(),
+            advice_tier: Vec::new(),
+            recommended_guard: Vec::new(),
         }
     }
 
@@ -234,6 +265,7 @@ mod tests {
                     paths: vec!["billing/invoice.py".to_owned(), "pipeline.py".to_owned()],
                     mode: None,
                     because: "billing never welds with pipeline".to_owned(),
+                    expect_fail: None,
                 }],
                 ..block(vec![FaceMode::Anchored])
             },
@@ -263,6 +295,7 @@ mod tests {
                     ],
                     mode: None,
                     because: "billing survives".to_owned(),
+                    expect_fail: None,
                 }],
                 ..block(vec![FaceMode::Anchored])
             },
@@ -304,5 +337,91 @@ mod tests {
         };
         let message = report.failure_message();
         assert!(message.is_some_and(|text| text.contains("PRECONDITION file_count")));
+    }
+}
+
+#[cfg(test)]
+mod drift_tests {
+    use std::collections::BTreeSet;
+
+    use unlace_engine::config::ProfileName;
+    use unlace_engine::result::{
+        Advice, FileMove, Move, MoveKind, MoveReason, RelocationAdvice, RelocationProposal,
+    };
+
+    use super::advice_drift_error;
+    use crate::error::EvalError;
+
+    const SHAPE: &str = "src/tree/validation/shape.ts";
+
+    fn census() -> BTreeSet<String> {
+        BTreeSet::from([SHAPE.to_owned()])
+    }
+
+    /// Recommended advice moving `path` out of its parent folder into `to`.
+    fn moving(path: &str, to: &str) -> Advice {
+        let from = path.rsplit_once('/').map_or("", |(folder, _)| folder);
+        let profiles = vec![ProfileName::Anchored, ProfileName::Greenfield];
+        Advice {
+            recommended: vec![RelocationAdvice {
+                proposal: RelocationProposal::File {
+                    relocation: Move {
+                        kind: MoveKind::Move,
+                        files: vec![FileMove {
+                            path: path.to_owned(),
+                            from: from.to_owned(),
+                        }],
+                        to: to.to_owned(),
+                        reason: MoveReason::Clustering,
+                        mirrors: Vec::new(),
+                    },
+                },
+                destination: to.to_owned(),
+                supporting_profiles: profiles.clone(),
+                qualified_profiles: profiles,
+                absent_profiles: Vec::new(),
+                conflicting_destinations: Vec::new(),
+                assessments: Vec::new(),
+                review_reasons: Vec::new(),
+            }],
+            review_candidates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn should_raise_no_case_error_when_every_advice_path_is_in_the_census() {
+        let advice = moving(SHAPE, "src/tree");
+
+        let error = advice_drift_error(&advice, &census(), "companion-folders");
+
+        assert!(error.is_none(), "census paths never drift: {error:?}");
+    }
+
+    #[test]
+    fn should_name_every_drifted_advice_path_in_one_case_error() {
+        let advice = moving(
+            "companion-folders/src/tree/validation/shape.ts",
+            "companion-folders/src/tree",
+        );
+
+        let error = advice_drift_error(&advice, &census(), "companion-folders");
+
+        let expected = concat!(
+            "advice names paths outside the fixture census (",
+            "destination \"companion-folders/src/tree\", ",
+            "to \"companion-folders/src/tree\", ",
+            "file \"companion-folders/src/tree/validation/shape.ts\", ",
+            "from \"companion-folders/src/tree/validation\"",
+            "); the advice path format drifted, so every advice pin would pass as absent ",
+            "(harness defect, never distance)",
+        );
+        assert!(
+            matches!(
+                &error,
+                Some(EvalError::TargetInvalid { target, message })
+                    if target == "companion-folders" && message == expected
+            ),
+            "a drifted advice path is one named case error: {error:?}"
+        );
     }
 }

@@ -48,6 +48,85 @@ pub struct AssertBlock {
     /// symbol-grain relocation must not churn homes the best state keeps).
     #[serde(default)]
     pub preserve_symbol_home: Vec<PreserveSymbolHome>,
+    /// Moves whose cross-profile advice tier is capped or pinned (SC-5: a
+    /// move the target falsifies never reaches `Recommended`).
+    #[serde(default)]
+    pub advice_tier: Vec<AdviceTier>,
+    /// Guards that no `Recommended` move breaks this block's own
+    /// `keep_together`, `preserve_dir`, or `preserve_symbol_home` pins.
+    #[serde(default)]
+    pub recommended_guard: Vec<RecommendedGuard>,
+}
+
+/// An advice tier, ordered weakest first: no advice, `Review candidate`,
+/// `Recommended`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// The result carries no advice entry for the move.
+    Absent,
+    /// The move appears only among `reviewCandidates`.
+    Review,
+    /// The move appears among `recommended`.
+    Recommended,
+}
+
+/// A move whose advice tier is capped (`max_tier`), floored (`min_tier`), or
+/// pinned (`exact_tier`).
+///
+/// Read from the result's cross-profile `advice`, never a candidate tree, so
+/// it takes no mode. `path` is the full repo-relative file the move leaves:
+/// without `symbol` it selects whole-file advice relocating that file
+/// (primary or mirrored test); with `symbol` it selects symbol advice moving
+/// that symbol out of `path`. `to`, when given, narrows the selection to
+/// advice whose destination (a folder for a file move, a file for a symbol
+/// move) equals it. The observed tier is the strongest tier any selected
+/// entry holds, `absent` when none matches.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdviceTier {
+    /// Full repo-relative path of the file the move leaves.
+    pub path: String,
+    /// The relocated symbol's source-declared name, for symbol advice.
+    #[serde(default)]
+    pub symbol: Option<String>,
+    /// The destination the selection is narrowed to, when given.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// The strongest tier the move may reach; exactly one of this,
+    /// [`AdviceTier::min_tier`] and [`AdviceTier::exact_tier`].
+    #[serde(default)]
+    pub max_tier: Option<Tier>,
+    /// The weakest tier the move must reach: a positive pin that a move
+    /// survives into the advice at that tier or stronger.
+    #[serde(default)]
+    pub min_tier: Option<Tier>,
+    /// The tier the move must hold exactly.
+    #[serde(default)]
+    pub exact_tier: Option<Tier>,
+    /// Why the move may not rank higher, must rank at least so, or must rank
+    /// exactly so.
+    pub because: String,
+    /// Temporary peel marker: the finding id and cause of a pin that is red
+    /// at this layer. The pin then passes while it fails, and fails once it
+    /// passes so the marker is removed (see CONTRACT.md).
+    #[serde(default)]
+    pub expect_fail: Option<String>,
+}
+
+/// The SC-5 guard: every `Recommended` advice entry must leave each of the
+/// block's `keep_together`, `preserve_dir`, and `preserve_symbol_home` pins
+/// intact. Read from the cross-profile advice, so it takes no mode.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecommendedGuard {
+    /// Why no recommended move may contradict the pinned best state.
+    pub because: String,
+    /// Temporary peel marker: the finding id and cause of a pin that is red
+    /// at this layer. The pin then passes while it fails, and fails once it
+    /// passes so the marker is removed (see CONTRACT.md).
+    #[serde(default)]
+    pub expect_fail: Option<String>,
 }
 
 /// Default candidate index: the best-scoring candidate.
@@ -75,6 +154,11 @@ pub struct PreserveSymbolHome {
     pub mode: Option<FaceMode>,
     /// Why this home holds in the best state.
     pub because: String,
+    /// Temporary peel marker: the finding id and cause of a pin that is red
+    /// at this layer. The pin then passes while it fails, and fails once it
+    /// passes so the marker is removed (see CONTRACT.md).
+    #[serde(default)]
+    pub expect_fail: Option<String>,
 }
 
 /// A directory that must survive as a named container once per package that
@@ -89,6 +173,11 @@ pub struct PreserveDir {
     pub mode: Option<FaceMode>,
     /// Why the directory survives in the best state.
     pub because: String,
+    /// Temporary peel marker: the finding id and cause of a pin that is red
+    /// at this layer. The pin then passes while it fails, and fails once it
+    /// passes so the marker is removed (see CONTRACT.md).
+    #[serde(default)]
+    pub expect_fail: Option<String>,
 }
 
 /// A set of repo-relative files some folder/domain container must (or must
@@ -103,6 +192,11 @@ pub struct PathSetAssertion {
     pub mode: Option<FaceMode>,
     /// Why these files share — or never share — a container.
     pub because: String,
+    /// Temporary peel marker: the finding id and cause of a pin that is red
+    /// at this layer. The pin then passes while it fails, and fails once it
+    /// passes so the marker is removed (see CONTRACT.md).
+    #[serde(default)]
+    pub expect_fail: Option<String>,
 }
 
 /// The `any_container` scope selector for a size band.
