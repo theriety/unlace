@@ -26,17 +26,17 @@ candidate is a proposed layout; inclusion does not make a move Recommended. Part
 rescored.
 
 anchored — 0 candidate(s)
-Baseline score: 0.1474
+Baseline score: 0.0517
 Fewer than the requested candidates survived; the solution space converged.
 Current layout is already optimal under this profile's search.
 No candidates were produced.
 
 greenfield — 1 candidate(s)
-Baseline score: 0.3474
+Baseline score: 0.2517
 Fewer than the requested candidates survived; the solution space converged.
 
 greenfield — candidate 1
-  Score: 0.3474 → 0.2850; improvement +0.0624
+  Score: 0.2517 → 0.1888; improvement +0.0629
   Proposed moves
     - Move file `dup-geo-py/app.py` → `dup-geo-py/geometry/app.py`
       Why: pulled toward `dup-geo-py/geometry/rectangle.py` — weight 2.0.

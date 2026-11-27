@@ -58,6 +58,8 @@ fn should_serialize_a_breakdown_as_camel_case() {
         capacity: 0.75,
         dependency_only: 0.05,
         companion_separation: 0.05,
+        entry_inflow: 0.125,
+        unit_outflow: 0.375,
     };
 
     let json = serde_json::to_string(&breakdown).unwrap_or_default();
@@ -67,6 +69,20 @@ fn should_serialize_a_breakdown_as_camel_case() {
     assert!(json.contains("\"capacity\":0.75"));
     assert!(json.contains("\"dependencyOnly\":0.05"));
     assert!(json.contains("\"companionSeparation\":0.05"));
+    assert!(json.contains("\"entryInflow\":0.125"));
+    assert!(json.contains("\"unitOutflow\":0.375"));
+}
+
+#[test]
+fn should_read_a_breakdown_without_companion_unit_terms_as_zero() {
+    let json = r#"{"cut":1.0,"imbalance":0.0,"naming":0.0,"path":0.0,"anchor":0.0,"capacity":0.0,"dependencyOnly":0.0,"companionSeparation":0.0}"#;
+
+    let breakdown: Result<ScoreBreakdown, _> = serde_json::from_str(json);
+
+    assert!(
+        matches!(breakdown, Ok(read) if read.entry_inflow.abs() < f64::EPSILON && read.unit_outflow.abs() < f64::EPSILON),
+        "a breakdown written before ADR-33 reads its new terms as zero"
+    );
 }
 
 #[test]

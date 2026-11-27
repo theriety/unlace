@@ -1302,9 +1302,10 @@ fn should_render_a_greenfield_candidate_tree_for_the_constellation_fixture() {
 #[test]
 fn should_narrate_the_greenfield_moves_for_the_workspace_fixture() {
     // the narration contract is pinned on constellation-ts's greenfield delta:
-    // four move groups over five files, each destination a real directory-
-    // derived cluster name (`constellation-ts/src/model`) reached through a
-    // dependency-pull reason. workspace-rust no longer carries this contract —
+    // `src/util` splits into the two clusters that use it — `clamp.ts` joins
+    // `src/core` and `hash.ts` joins `src/model` (ADR-32: with imbalance a mean,
+    // both single-cluster helpers follow their only callers), each destination a
+    // real directory-derived cluster reached through a dependency-pull reason. workspace-rust no longer carries this contract —
     // its greenfield candidate now converges back to the identity layout, so
     // diffing it against current narrates `no moves`. Synthetic grab-bag
     // labels like `mixed` stay dead: every destination is real.
@@ -1326,8 +1327,14 @@ fn should_narrate_the_greenfield_moves_for_the_workspace_fixture() {
         outcome.stdout
     );
     assert!(
-        outcome.stdout.contains("move — pulled by "),
-        "the move carries a dependency-pull reason, not a clustering fallback: {}",
+        outcome.stdout.contains("→ src/core]"),
+        "the core-only helper joins the real `core` cluster: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("split — pulled by beta.ts")
+            && outcome.stdout.contains("split — pulled by matrix.ts"),
+        "each split carries a dependency-pull reason, not a clustering fallback: {}",
         outcome.stdout
     );
     assert!(

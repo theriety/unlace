@@ -64,6 +64,8 @@ pub(in crate::analyze) struct ScoringContext<'a> {
     group_cohesions: Vec<f64>,
     distance: DistanceFacts,
     pressure: TreePressure,
+    /// Files of the tree that sit outside the companion unit they started in.
+    file_outflows: u32,
 }
 
 impl<'a> ScoringContext<'a> {
@@ -115,6 +117,9 @@ impl<'a> ScoringContext<'a> {
                 .for_each(|cell| *cell = Some(*start));
         }
 
+        let file_outflows = lookups
+            .units
+            .file_outflows(tree, pass_start_file_by_candidate);
         let (groups, group_order) = Self::child_groups(tree);
         let (cohesion_files, group_cohesions) = Self::cohesion(lookups, tree);
 
@@ -131,6 +136,7 @@ impl<'a> ScoringContext<'a> {
             group_cohesions,
             distance: Self::distance_facts(lookups, tree, slots),
             pressure: TreePressure::new(tree, namespaces, key_by_id, capacity),
+            file_outflows,
         }
     }
 }

@@ -22,18 +22,18 @@ candidate is a proposed layout; inclusion does not make a move Recommended. Part
 rescored.
 
 anchored — 0 candidate(s)
-Baseline score: 6.2103
+Baseline score: 6.1146
 Fewer than the requested candidates survived; the solution space converged.
 Current layout violates 2 capacity cap(s).
 No candidates were produced.
 
 greenfield — 1 candidate(s)
-Baseline score: 6.4103
+Baseline score: 6.3146
 Fewer than the requested candidates survived; the solution space converged.
 Current layout violates 2 capacity cap(s).
 
 greenfield — candidate 1
-  Score: 6.4103 → 4.2180; improvement +2.1923
+  Score: 6.3146 → 4.1405; improvement +2.1741
   Capacity remaining: 1 (0 at file level).
   Proposed moves
     - Move file `dup-ws-ts/atlas/src/agent/loop.ts` → `dup-ws-ts/atlas/src/core/loop.ts`

@@ -226,9 +226,11 @@ pub(crate) fn effective_parameter_lines(name: &str, p: &ProfileConfig) -> Vec<St
             weight(p.objective.capacity)
         ),
         format!(
-            "             dependency-only {} · companion-separation {}",
+            "             dependency-only {} · companion-separation {} · entry-inflow {} · unit-outflow {}",
             weight(p.objective.dependency_only),
-            weight(p.objective.companion_separation)
+            weight(p.objective.companion_separation),
+            weight(p.objective.entry_inflow),
+            weight(p.objective.unit_outflow)
         ),
         format!(
             "   weights   value-import {} · inheritance {} · call {} · type-reference {} · re-export {}",
@@ -291,7 +293,7 @@ pub(crate) fn effective_parameter_lines(name: &str, p: &ProfileConfig) -> Vec<St
 type Term = fn(&ScoreBreakdown) -> f64;
 
 /// The scored terms that always print, in their fixed table order.
-const TERMS: [(&str, Term); 7] = [
+const TERMS: [(&str, Term); 9] = [
     ("cut", |breakdown| breakdown.cut),
     ("imbalance", |breakdown| breakdown.imbalance),
     ("naming", |breakdown| breakdown.naming),
@@ -301,6 +303,8 @@ const TERMS: [(&str, Term); 7] = [
     ("companion-separation", |breakdown| {
         breakdown.companion_separation
     }),
+    ("entry-inflow", |breakdown| breakdown.entry_inflow),
+    ("unit-outflow", |breakdown| breakdown.unit_outflow),
 ];
 
 #[cfg(test)]
@@ -496,6 +500,8 @@ mod tests {
             anchor: 0.0,
             dependency_only: 0.0,
             companion_separation: 0.0,
+            entry_inflow: 0.0,
+            unit_outflow: 0.0,
             capacity: 0.0,
         }
     }
