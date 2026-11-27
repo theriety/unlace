@@ -265,7 +265,6 @@ mod tests {
             path: path.to_owned(),
             mode: None,
             because: "the home holds in the best state".to_owned(),
-            expect_fail: None,
         }
     }
 
@@ -328,7 +327,6 @@ mod tests {
                     path: "billing".to_owned(),
                     mode: None,
                     because: "billing survives".to_owned(),
-                    expect_fail: None,
                 },
                 face,
                 &inputs,
@@ -338,7 +336,6 @@ mod tests {
                     paths: vec!["billing/invoice.py".to_owned(), "pipeline.py".to_owned()],
                     mode: None,
                     because: "unrelated".to_owned(),
-                    expect_fail: None,
                 },
                 face,
                 &inputs,
@@ -428,7 +425,6 @@ mod tests {
                 path: "billing".to_owned(),
                 mode: None,
                 because: "billing survives whole".to_owned(),
-                expect_fail: None,
             },
             FaceMode::Anchored,
             &inputs_with(&partial),
@@ -448,7 +444,6 @@ mod tests {
                 path: "billing".to_owned(),
                 mode: None,
                 because: "billing survives".to_owned(),
-                expect_fail: None,
             },
             FaceMode::Anchored,
             &inputs_with(&torn),
@@ -469,7 +464,6 @@ mod tests {
             path: path.to_owned(),
             mode: None,
             because: "the directory survives".to_owned(),
-            expect_fail: None,
         };
 
         let kept = evaluate_preserve_dir(&preserve("billing"), FaceMode::Anchored, &inputs);
@@ -572,7 +566,6 @@ mod tests {
             path: path.to_owned(),
             mode: None,
             because: "the directory survives".to_owned(),
-            expect_fail: None,
         }
     }
 
@@ -638,7 +631,6 @@ mod tests {
             paths: vec![left.to_owned(), right.to_owned()],
             mode: None,
             because: "the pair's relation holds in the best state".to_owned(),
-            expect_fail: None,
         };
         let laminar = laminar_candidate();
         let laminar_inputs = inputs_with(&laminar);

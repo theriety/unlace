@@ -1,0 +1,56 @@
+# Constraint target for the `surviving-move-ts` fixture — see CONTRACT.md for the schema.
+#
+# Failure mode: missed-move. The positive counterpart of companion-folders:
+# that target pins moves that must NOT happen, so a fix that silenced every
+# move would pass it. This one pins a move that must survive. formatRow sits
+# in src/report/format.ts, uses nothing in report/, and is called only from
+# src/table/ (six declarations in row.ts, one in grid.ts; header.ts
+# renders through row.ts). Its siblings formatTitle and formatNote serve
+# report/, so the file stays and the symbol leaves alone. The ADR-34 gates
+# must let the move through to the advice; Review is enough
+# (theriety/unlace#1, D3).
+
+schema = 1
+fixture = "surviving-move-ts"
+
+[meta]
+failure_mode = "missed-move"
+language = "typescript"
+question = "Does a symbol whose only consumers live in another folder still reach the advice as a move toward its majority consumer?"
+
+[run]
+mode = "both"        # advice folds both profiles together
+candidates = 3       # engine default k
+seed = 42            # engine default seed
+config = "defaults"  # pure built-in defaults; no fixture unlace.toml
+
+[[precondition]]
+kind = "file_count"
+min = 6
+max = 6
+because = "the fixture ships exactly six source files (three in report/, three in table/); any other count means discovery broke"
+
+[[assert]]
+modes = ["anchored", "greenfield"]
+candidate = 1
+
+# The siblings stay home: the move is a symbol move, not a file move.
+[[assert.preserve_symbol_home]]
+symbol = "formatTitle"
+path = "src/report/format.ts"
+because = "formatTitle serves report/summary.ts and report/page.ts, so format.ts keeps it and stays a real file"
+
+# Measured under defaults, identical in the anchored and greenfield profiles:
+# weighted 0.68 against a 0.60 minimum, structural 0.74 against 0.50, margin
+# 0.21 against 0.15 (best alternative src/table/grid.ts), so both profiles
+# qualify it and it reaches Recommended. The margin cannot honestly reach
+# 0.25: every src/table/ file shares the advantage and reach of row.ts, so the
+# margin is 0.25 x (row.ts cohesion - grid.ts cohesion) + 0.10 x role gap,
+# and row.ts's cohesion is 6 of 7 neighbours. The pin stays at the Review
+# floor; it guards the move's survival, not the tier calibration.
+[[assert.advice_tier]]
+symbol = "formatRow"
+path = "src/report/format.ts"
+to = "src/table/row.ts"
+min_tier = "review"
+because = "formatRow is called only from src/table/, by six declarations in row.ts and one in grid.ts, and uses nothing in report/; the move to its majority consumer must survive into the advice (D3)"

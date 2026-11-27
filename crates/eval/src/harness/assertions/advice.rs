@@ -35,14 +35,14 @@ pub(in crate::harness) fn evaluate_advice(
     inputs: &EvalInputs<'_>,
     advice: &Advice,
 ) -> Vec<Verdict> {
-    let pins = block.advice_tier.iter().flat_map(|pin| {
-        let verdict = evaluate_advice_tier(pin, advice);
-        super::apply_expect_fail(pin.expect_fail.as_deref(), vec![verdict])
-    });
-    let guards = block.recommended_guard.iter().flat_map(|guard| {
-        let verdict = evaluate_recommended_guard(guard, block, inputs, advice);
-        super::apply_expect_fail(guard.expect_fail.as_deref(), vec![verdict])
-    });
+    let pins = block
+        .advice_tier
+        .iter()
+        .map(|pin| evaluate_advice_tier(pin, advice));
+    let guards = block
+        .recommended_guard
+        .iter()
+        .map(|guard| evaluate_recommended_guard(guard, block, inputs, advice));
     pins.chain(guards).collect()
 }
 
@@ -510,7 +510,6 @@ mod tests {
             min_tier: None,
             exact_tier: None,
             because: "F1".to_owned(),
-            expect_fail: None,
         }
     }
 
@@ -687,7 +686,6 @@ mod tests {
             paths: vec![SHAPE.to_owned(), RECORD.to_owned(), CONTENT.to_owned()],
             mode: None,
             because: "F1".to_owned(),
-            expect_fail: None,
         }
     }
 
@@ -698,18 +696,15 @@ mod tests {
                 path: "tree/validation".to_owned(),
                 mode: None,
                 because: "F1".to_owned(),
-                expect_fail: None,
             }],
             preserve_symbol_home: vec![PreserveSymbolHome {
                 symbol: "inferMatches".to_owned(),
                 path: INFERENCE.to_owned(),
                 mode: None,
                 because: "F3".to_owned(),
-                expect_fail: None,
             }],
             recommended_guard: vec![RecommendedGuard {
                 because: "SC-5".to_owned(),
-                expect_fail: None,
             }],
             ..block()
         }
@@ -775,11 +770,9 @@ mod tests {
                 paths: vec![SHAPE.to_owned(), OWNER.to_owned()],
                 mode: None,
                 because: "gathered".to_owned(),
-                expect_fail: None,
             }],
             recommended_guard: vec![RecommendedGuard {
                 because: "SC-5".to_owned(),
-                expect_fail: None,
             }],
             ..block()
         };
@@ -812,7 +805,6 @@ mod tests {
                 paths: vec![SHAPE.to_owned(), SHAPE_TEST.to_owned()],
                 mode: None,
                 because: "a test stays beside its subject".to_owned(),
-                expect_fail: None,
             }],
             ..guarded()
         };
@@ -859,7 +851,6 @@ mod tests {
                 path: INFERENCE.to_owned(),
                 mode: Some(FaceMode::Greenfield),
                 because: "F3".to_owned(),
-                expect_fail: None,
             }],
             ..guarded()
         };

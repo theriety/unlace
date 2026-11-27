@@ -31,7 +31,7 @@ pub use self::finding::{
 };
 pub(crate) use self::group_keyed::GroupKeyed;
 pub use self::movement::{
-    FileMove, MirrorMove, Move, MoveKind, MoveReason, SymbolKind, SymbolMove, TermShift,
+    FileMove, LeftBehind, MirrorMove, Move, MoveKind, MoveReason, SymbolKind, SymbolMove, TermShift,
 };
 pub use self::profile::{
     CapacityRemainder, CurrentStanding, CurrentTree, ModeResult, Modes, ProfileCurrent,

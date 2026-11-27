@@ -354,7 +354,7 @@ minimum-ambiguity-margin = 0.15
 [profiles.anchored.qualification.weights]
 unique-owner = 0.10
 role-affinity = 0.10
-source-cohesion = 0.25
+destination-advantage = 0.25
 destination-cohesion = 0.25
 producer-evidence = 0.10
 architectural-reach = 0.20
@@ -396,7 +396,7 @@ minimum-ambiguity-margin = 0.20
 [profiles.greenfield.qualification.weights]
 unique-owner = 0.05
 role-affinity = 0.15
-source-cohesion = 0.20
+destination-advantage = 0.20
 destination-cohesion = 0.30
 producer-evidence = 0.10
 architectural-reach = 0.20
@@ -477,7 +477,7 @@ minimum-ambiguity-margin = 0.15
 [profiles.anchored.qualification.weights]
 unique-owner = 0.10
 role-affinity = 0.10
-source-cohesion = 0.25
+destination-advantage = 0.25
 destination-cohesion = 0.25
 producer-evidence = 0.10
 architectural-reach = 0.20
@@ -489,7 +489,7 @@ minimum-ambiguity-margin = 0.20
 [profiles.greenfield.qualification.weights]
 unique-owner = 0.05
 role-affinity = 0.15
-source-cohesion = 0.20
+destination-advantage = 0.20
 destination-cohesion = 0.30
 producer-evidence = 0.10
 architectural-reach = 0.20
@@ -547,8 +547,8 @@ fn should_default_every_profile_to_the_conservative_qualification_policy() {
                 0.10,
             ),
             (
-                "weights.source-cohesion",
-                qualification.weights.source_cohesion,
+                "weights.destination-advantage",
+                qualification.weights.destination_advantage,
                 0.25,
             ),
             (
@@ -1210,4 +1210,47 @@ fn should_reject_an_invalid_symbol_gain_threshold_with_its_key_path() {
             "{value} is rejected at its key, got {result:?}"
         );
     }
+}
+
+#[test]
+fn should_accept_the_deprecated_source_cohesion_weight_key() {
+    let old = "[profiles.anchored.qualification.weights]\nsource-cohesion = 0.4\n";
+    let new = "[profiles.anchored.qualification.weights]\ndestination-advantage = 0.4\n";
+
+    let old: Result<AnalyzeConfig, _> = toml::from_str(old);
+    let new: Result<AnalyzeConfig, _> = toml::from_str(new);
+
+    let weight = |config: Result<AnalyzeConfig, _>| {
+        config.ok().map(|config| {
+            config
+                .profiles
+                .anchored
+                .qualification
+                .weights
+                .destination_advantage
+        })
+    };
+    assert_eq!(weight(old), Some(0.4));
+    assert_eq!(weight(new), Some(0.4));
+}
+
+#[test]
+fn should_reject_both_spellings_of_the_destination_advantage_weight() {
+    let path = std::env::temp_dir().join(format!("unlace-alias-{}.toml", std::process::id()));
+    let written = std::fs::write(
+        &path,
+        "[profiles.anchored.qualification.weights]\n\
+         destination-advantage = 0.3\nsource-cohesion = 0.3\n",
+    );
+    assert!(written.is_ok());
+
+    let loaded = load_config(&path);
+    let _ = std::fs::remove_file(&path);
+
+    assert!(matches!(
+        loaded,
+        Err(UnlaceError::ConfigInvalid { key: Some(key), reason })
+            if key == "profiles.anchored.qualification.weights.destination-advantage"
+                && reason.contains("deprecated")
+    ));
 }

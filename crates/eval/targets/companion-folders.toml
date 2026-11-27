@@ -36,11 +36,6 @@ kind = "violation_present"
 violation = "cycle"
 because = "the trimmed parser keeps its cross-file import cycles; without one the cycle-cut defect (C1) has no substrate"
 
-# Every pin below is red before the engine fixes land, so each carries a
-# temporary `expect_fail` naming its finding and the observed false move (see
-# CONTRACT.md). A marked pin passes while it fails and fails once it passes,
-# so each fix must delete the markers of the pins it turns green.
-
 [[assert]]
 modes = ["anchored", "greenfield"]
 candidate = 1

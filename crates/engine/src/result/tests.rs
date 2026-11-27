@@ -284,6 +284,7 @@ fn should_display_every_reason_as_its_prose() {
             MoveReason::PulledBy {
                 partner: "src/core/engine.ts".to_owned(),
                 weight: 2.5,
+                left_behind: None,
             },
             "pulled by engine.ts (w 2.5)",
         ),
@@ -475,5 +476,49 @@ fn should_load_a_schema_eleven_result_without_cycle_coverage_or_import_cycles() 
             .and_then(|finding| finding.break_suggestions.as_ref())
             .map(Vec::len),
         Some(1)
+    );
+}
+
+#[test]
+fn should_load_a_pulled_by_reason_written_without_the_source_side() {
+    let old = r#"{"kind":"pulledBy","partner":"src/a.ts","weight":1.5}"#;
+    let reason: Option<MoveReason> = serde_json::from_str(old).ok();
+
+    assert_eq!(
+        reason,
+        Some(MoveReason::PulledBy {
+            partner: "src/a.ts".to_owned(),
+            weight: 1.5,
+            left_behind: None,
+        })
+    );
+    assert_eq!(
+        reason
+            .and_then(|r| serde_json::to_string(&r).ok())
+            .as_deref(),
+        Some(old)
+    );
+}
+
+#[test]
+fn should_load_evidence_saved_under_the_source_cohesion_name() {
+    let saved = serde_json::json!({
+        "uniqueOwner": 1.0,
+        "roleAffinity": 0.5,
+        "sourceCohesion": 0.7,
+        "destinationCohesion": 0.4,
+        "producerEvidence": 0.0,
+        "architecturalReach": 0.2
+    });
+
+    let loaded: Option<EvidenceSignals> = serde_json::from_value(saved).ok();
+
+    assert_eq!(loaded.map(|e| e.destination_advantage), Some(0.7));
+    let reserialized = loaded.and_then(|e| serde_json::to_value(e).ok());
+    assert_eq!(
+        reserialized
+            .as_ref()
+            .and_then(|v| v.get("destinationAdvantage")),
+        Some(&serde_json::json!(0.7))
     );
 }

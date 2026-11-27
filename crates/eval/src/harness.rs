@@ -270,7 +270,6 @@ mod tests {
                     paths: vec!["billing/invoice.py".to_owned(), "pipeline.py".to_owned()],
                     mode: None,
                     because: "billing never welds with pipeline".to_owned(),
-                    expect_fail: None,
                 }],
                 ..block(vec![FaceMode::Anchored])
             },
@@ -300,7 +299,6 @@ mod tests {
                     ],
                     mode: None,
                     because: "billing survives".to_owned(),
-                    expect_fail: None,
                 }],
                 ..block(vec![FaceMode::Anchored])
             },

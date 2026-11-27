@@ -16,6 +16,8 @@ real OSS code, deterministic bytes, no timestamps or randomness.
 | `large-app` | scale | typescript | 108 | does proposal quality hold at three figures of file count? |
 | `cycle-span` | import-cycle | python | 5 | does an import cycle spanning two real directories keep both whole without churning a healthy layout? |
 | `companion-folders` | directory-tearing | typescript | 33 src + 1 manifest | do proposals keep companion-folder members, file entry points, and shared symbols where the code's own structure puts them? |
+| `surviving-move-ts` | missed-move | typescript | 6 src + 1 manifest | does a symbol whose only consumers live in another folder still reach the advice toward its majority consumer? |
+| `recommended-move-ts` | missed-move | typescript | 6 src + 1 manifest | does a companion type misfiled away from its sole owner reach Recommended under the built-in defaults? |
 
 Provenance: `companion-folders/` is a pruned copy of the in-house `mdc` parser
 (`src/` only), not synthetic. Files were removed one at a time, and a removal

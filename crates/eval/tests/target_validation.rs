@@ -486,38 +486,6 @@ because = "the move survives into the advice"
 }
 
 #[test]
-fn expect_fail_accepts_a_named_reason_and_rejects_an_empty_one() -> TestResult {
-    let marked = |reason: &str| {
-        format!(
-            r#"{BOTH_RUN}
-[[assert]]
-modes = ["anchored", "greenfield"]
-
-[[assert.preserve_symbol_home]]
-symbol = "inferMatches"
-path = "src/differ/inference.ts"
-because = "the entry point stays with its helpers"
-expect_fail = "{reason}"
-"#
-        )
-    };
-    let spec = parse(&marked("F3: inferMatches moves to matcher.ts"))?;
-    let reasons: Vec<_> = spec
-        .assert
-        .iter()
-        .flat_map(|block| &block.preserve_symbol_home)
-        .map(|home| home.expect_fail.as_deref())
-        .collect();
-    assert_eq!(reasons, vec![Some("F3: inferMatches moves to matcher.ts")]);
-    spec.validate(PROBE)?;
-
-    assert_rejections(&[
-        (marked(""), "expect_fail needs a non-empty reason"),
-        (marked("  "), "expect_fail needs a non-empty reason"),
-    ])
-}
-
-#[test]
 fn load_target_reports_unreadable_and_unparsable_targets() -> TestResult {
     let missing = load_target("no-such-target")
         .err()

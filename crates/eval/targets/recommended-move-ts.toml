@@ -1,0 +1,52 @@
+# Constraint target for the `recommended-move-ts` fixture — see CONTRACT.md for the schema.
+#
+# Failure mode: missed-move. Proves the Recommended tier is reachable under
+# the built-in defaults (theriety/unlace#1, D3). RenderPageOptions sits in
+# src/shared/types.ts, but its unique signature owner is
+# renderPage(options: RenderPageOptions) in src/render/page.ts (a
+# companion-owner affinity), and every declaration that names it lives in that
+# file. types.ts keeps unrelated residents (LogEntry, EntityId), so the move
+# is a symbol move. Each signal is pushed high: owner, producer, advantage
+# and destination cohesion, with no other file naming the type (margin).
+
+schema = 1
+fixture = "recommended-move-ts"
+
+[meta]
+failure_mode = "missed-move"
+language = "typescript"
+question = "Does a companion type misfiled away from its sole owner reach Recommended under the built-in defaults?"
+
+[run]
+mode = "both"        # Recommended needs a strict majority of both profiles
+candidates = 3       # engine default k
+seed = 42            # engine default seed
+config = "defaults"  # pure built-in defaults; no fixture unlace.toml
+
+[[precondition]]
+kind = "file_count"
+min = 6
+max = 6
+because = "the fixture ships exactly six source files (types, three render files, logger, registry); any other count means discovery broke"
+
+[[assert]]
+modes = ["anchored", "greenfield"]
+candidate = 1
+
+# The owner stays home: the type comes to it, not the other way round.
+[[assert.preserve_symbol_home]]
+symbol = "renderPage"
+path = "src/render/page.ts"
+because = "renderPage is the companion owner and the destination; it must not chase the type into shared/"
+
+# Measured under defaults, identical in the anchored and greenfield profiles:
+# owner 1.00, role 0.33, advantage 1.00, destination 1.00, producer 1.00,
+# reach 0.00. Weighted 0.73 against a 0.60 minimum, structural 0.78 against
+# 0.50, margin 0.70 against 0.15 (best alternative: staying in
+# src/shared/types.ts); both profiles pick src/render/page.ts first.
+[[assert.advice_tier]]
+symbol = "RenderPageOptions"
+path = "src/shared/types.ts"
+to = "src/render/page.ts"
+exact_tier = "recommended"
+because = "RenderPageOptions is the signature companion of its sole owner renderPage and is named only in src/render/page.ts; both profiles qualify the move to that file, so it is Recommended under defaults (D3)"

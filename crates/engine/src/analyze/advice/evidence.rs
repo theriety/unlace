@@ -179,7 +179,7 @@ impl<'a> EvidenceIndex<'a> {
             evidence: EvidenceSignals {
                 unique_owner: 0.0,
                 role_affinity: 0.0,
-                source_cohesion: 0.0,
+                destination_advantage: 0.0,
                 destination_cohesion: 0.0,
                 producer_evidence: 0.0,
                 architectural_reach: 0.0,
