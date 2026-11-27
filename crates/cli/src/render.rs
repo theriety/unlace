@@ -25,6 +25,8 @@ use unlace_engine::{AnalyzeResult, ModeResult, ProfileConfig, ScoreBreakdown, Te
 pub const ADVICE_DISCLAIMER: &str = "All findings and moves are suggestions. Applying them may break the build; use your own judgement.";
 
 pub use diff::{render_diff, render_moves};
+pub use findings::write_violation_report;
+#[cfg(test)]
 pub use findings::write_violation_table;
 pub use tree::render_tree;
 
@@ -407,6 +409,7 @@ mod tests {
                 files_by_language: BTreeMap::from([("ts".to_owned(), 4)]),
             },
             current: CurrentTree {
+                cycle_coverage: unlace_engine::CycleCoverage::default(),
                 tree: file_node("lib", 2),
                 shared_findings: Vec::new(),
             },
@@ -529,6 +532,7 @@ mod tests {
             severity: Severity::Violation,
             location: vec!["a".to_owned(), "b".to_owned()],
             detail: "dependency cycle".to_owned(),
+            import_cycle: None,
             break_suggestions: None,
             capacity: None,
         }
@@ -541,6 +545,7 @@ mod tests {
             severity: Severity::Violation,
             location: vec![name.to_owned()],
             detail: format!("{name} over cap"),
+            import_cycle: None,
             break_suggestions: None,
             capacity: None,
         }
@@ -745,6 +750,7 @@ mod tests {
             severity,
             location: vec!["ai/generators".to_owned()],
             detail: "stale preformatted detail".to_owned(),
+            import_cycle: None,
             break_suggestions: None,
             capacity: Some(CapacityBreach {
                 measured,
@@ -808,6 +814,7 @@ mod tests {
             severity: Severity::Violation,
             location: vec!["alpha".to_owned(), "beta".to_owned()],
             detail: "2-symbol cycle".to_owned(),
+            import_cycle: None,
             break_suggestions: Some(vec![
                 EdgeBreak {
                     source: "beta".to_owned(),
@@ -853,6 +860,7 @@ mod tests {
             severity: Severity::Violation,
             location: vec!["src/core/left.ts".to_owned(), "src/core/right.ts".to_owned()],
             detail: "2-symbol cycle; unlace keeps a dependency cycle in one file; to split it, break right -> left (w=1.0, exact)".to_owned(),
+            import_cycle: None,
             break_suggestions: Some(vec![EdgeBreak {
                 source: "right".to_owned(),
                 target: "left".to_owned(),
@@ -879,6 +887,7 @@ mod tests {
             severity: Severity::Violation,
             location: vec!["left.ts".to_owned(), "right.ts".to_owned()],
             detail: "2-symbol cycle; unlace keeps a dependency cycle in one file; to split it, break right -> left (w=1.0, exact)".to_owned(),
+            import_cycle: None,
             break_suggestions: Some(vec![EdgeBreak {
                 source: "right".to_owned(),
                 target: "left".to_owned(),
@@ -1138,12 +1147,68 @@ mod tests {
     }
 
     #[test]
+    fn should_name_each_import_to_remove_for_an_import_cycle() {
+        let removal = |importer: &str, imported: &str, specifier: &str, line: u32| {
+            unlace_engine::ImportBreak {
+                importer: importer.to_owned(),
+                imported: imported.to_owned(),
+                statements: vec![unlace_engine::ImportStatement {
+                    line,
+                    specifier: specifier.to_owned(),
+                }],
+                references: vec![unlace_engine::SymbolReference {
+                    source: "parseFragment".to_owned(),
+                    target: "buildAst".to_owned(),
+                }],
+                weight: 1,
+            }
+        };
+        let violation = Violation {
+            kind: ViolationKind::Cycle,
+            severity: Severity::Violation,
+            location: vec!["src/adapters.ts".to_owned(), "src/build.ts".to_owned()],
+            detail: String::new(),
+            import_cycle: Some(unlace_engine::ImportCycle {
+                status: unlace_engine::ImportCycleStatus::Cut,
+                cut: vec![
+                    removal("src/adapters.ts", "src/build.ts", "./build", 7),
+                    removal("src/build.ts", "src/adapters.ts", "./adapters", 14),
+                ],
+                exact: true,
+                files_without_imports: Vec::new(),
+                no_load_order: None,
+            }),
+            break_suggestions: None,
+            capacity: None,
+        };
+
+        let text =
+            findings::findings_lines("Shared", &[violation], RenderOptions::default()).join(" ");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(
+            text.contains(
+                "`src/adapters.ts`/`src/build.ts` — 2-file import cycle; to break it, remove \
+                 `./build` (line 7) from `src/adapters.ts`, which carries 1 symbol reference \
+                 (`parseFragment` -> `buildAst`) (exact), +1 more import"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("Also remove `./adapters` (line 14) from `src/build.ts`"),
+            "{text}"
+        );
+        assert!(!text.contains("same file"), "{text}");
+    }
+
+    #[test]
     fn should_label_a_same_file_cut_honestly() {
         let violation = Violation {
             kind: ViolationKind::Cycle,
             severity: Severity::Violation,
             location: vec!["a.rs".to_owned(), "b.rs".to_owned()],
             detail: "2-symbol cycle".to_owned(),
+            import_cycle: None,
             break_suggestions: Some(vec![
                 EdgeBreak {
                     source: "x".to_owned(),
@@ -3084,6 +3149,62 @@ mod tests {
                 ]
                 .as_slice()
             )
+        );
+    }
+
+    #[test]
+    fn should_surface_a_failed_write_of_the_cycle_coverage_note() {
+        let partial = unlace_engine::CycleCoverage {
+            status: unlace_engine::CycleAnalysis::Partial,
+            files_without_imports: 1,
+        };
+        let report = |sink: &mut FaultySink| {
+            write_violation_report(&[], &partial, RenderOptions::default(), sink)
+        };
+        let mut full = Vec::new();
+
+        let written = write_violation_report(&[], &partial, RenderOptions::default(), &mut full);
+
+        assert!(written.is_ok());
+        assert!(
+            String::from_utf8_lossy(&full)
+                .contains("\nCycle analysis is partial: 1 file states no imports,")
+        );
+        assert_eq!(swallowed_write_faults(&full, report), 0);
+    }
+
+    #[test]
+    fn should_wrap_the_cycle_coverage_note_under_the_shared_findings() {
+        let mut result = result_with(Vec::new());
+        result.current.cycle_coverage = unlace_engine::CycleCoverage {
+            status: unlace_engine::CycleAnalysis::Unavailable,
+            files_without_imports: 3,
+        };
+
+        let lines = report_lines(&result, "fixture");
+
+        let start = lines
+            .iter()
+            .position(|line| line.starts_with("  Cycle analysis is unavailable:"))
+            .unwrap_or(lines.len());
+        let note: Vec<&str> = lines
+            .iter()
+            .skip(start)
+            .take_while(|line| line.starts_with("  ") && !line.trim().is_empty())
+            .map(|line| line.trim())
+            .collect();
+        assert_eq!(
+            note.join(" "),
+            "Cycle analysis is unavailable: no analysed file states its imports, so no cycle \
+             finding does not mean no cycle."
+        );
+        assert!(note.len() > 1, "the note wraps: {lines:?}");
+        assert!(
+            lines
+                .iter()
+                .skip(start)
+                .take(note.len())
+                .all(|line| line.chars().count() <= 100)
         );
     }
 }

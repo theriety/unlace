@@ -197,6 +197,10 @@ pub fn run_case(
     }
     let (mut verdicts, pair_f1) =
         assertions::evaluate_assertions(block, &inputs, spec.reference.as_ref());
+    verdicts.extend(assertions::evaluate_cycle_import_cuts(
+        &block.cycle_import_cut,
+        &findings,
+    ));
     verdicts.extend(assertions::evaluate_advice(block, &inputs, &result.advice));
     let observations = assertions::observe_modes(&result, &inputs.faces);
 
@@ -250,6 +254,7 @@ mod tests {
             capacity_relief: Vec::new(),
             non_inversion: Vec::new(),
             preserve_symbol_home: Vec::new(),
+            cycle_import_cut: Vec::new(),
             advice_tier: Vec::new(),
             recommended_guard: Vec::new(),
         }

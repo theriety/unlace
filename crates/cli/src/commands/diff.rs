@@ -170,6 +170,7 @@ mod tests {
                 files_by_language: BTreeMap::new(),
             },
             current: CurrentTree {
+                cycle_coverage: unlace_engine::CycleCoverage::default(),
                 tree: file("lib"),
                 shared_findings: Vec::new(),
             },

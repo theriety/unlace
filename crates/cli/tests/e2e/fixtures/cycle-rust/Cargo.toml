@@ -1,0 +1,13 @@
+# A standalone fixture crate whose two modules `use` each other: a Rust import
+# cycle, which carries no load order and so is reported but never gates.
+# The empty `[workspace]` table keeps it out of the outer workspace.
+[workspace]
+
+[package]
+name = "unlace-e2e-cycle-rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "unlace_e2e_cycle_rust"
+path = "src/lib.rs"

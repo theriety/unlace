@@ -1020,12 +1020,51 @@ fn should_match_the_analyze_json_face_even_when_capacity_findings_exist() {
     );
 }
 
+/// Asserts one import cut joins two files of `members`, locates every
+/// statement it removes, and carries a positive weight (ADR-35).
+fn assert_located_import_cut(removed: &serde_json::Value, members: &[String]) {
+    let importer = removed.get("importer").and_then(serde_json::Value::as_str);
+    let imported = removed.get("imported").and_then(serde_json::Value::as_str);
+    assert!(
+        importer.is_some_and(|file| members.iter().any(|member| member == file))
+            && imported.is_some_and(|file| members.iter().any(|member| member == file))
+            && importer != imported,
+        "an import cut joins two files of the cycle: {removed}"
+    );
+    let statements = removed
+        .get("statements")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !statements.is_empty()
+            && statements.iter().all(|statement| {
+                statement
+                    .get("line")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|line| line > 0)
+                    && statement
+                        .get("specifier")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|specifier| !specifier.is_empty())
+            }),
+        "an import cut locates its statements: {removed}"
+    );
+    assert!(
+        removed
+            .get("weight")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|weight| weight >= 1),
+        "an import cut carries a positive weight: {removed}"
+    );
+}
+
 #[test]
-fn should_populate_break_suggestions_with_real_names_weights_and_exactness() {
-    // MFAS is wired (D-32 resolved): every cycle violation carries a non-empty
-    // breakSuggestions list whose entries name real symbols, price the break in
-    // the config's edge-weight currency, and flag ILP-proven minimality; the
-    // detail line leads with the first break.
+fn should_name_the_import_cut_of_a_cross_file_cycle() {
+    // ADR-35: a cycle finding reports a file-import cycle and names the
+    // imports whose removal breaks it, each located by specifier and line and
+    // carrying the symbol references that must move first; the detail line
+    // leads with the first import to remove.
     let root = fixture("cyclic");
     let root_str = root.to_str().unwrap_or_default();
 
@@ -1043,6 +1082,14 @@ fn should_populate_break_suggestions_with_real_names_weights_and_exactness() {
     let parsed: serde_json::Value =
         serde_json::from_str(&outcome.stdout).unwrap_or(serde_json::Value::Null);
 
+    assert_eq!(
+        parsed
+            .pointer("/current/cycleCoverage/status")
+            .and_then(serde_json::Value::as_str),
+        Some("complete"),
+        "every python file states its imports: {}",
+        outcome.stdout
+    );
     let cycles: Vec<&serde_json::Value> = parsed
         .pointer("/current/sharedFindings")
         .and_then(serde_json::Value::as_array)
@@ -1072,56 +1119,48 @@ fn should_populate_break_suggestions_with_real_names_weights_and_exactness() {
                     .collect()
             })
             .unwrap_or_default();
-        let suggestions = cycle
-            .get("breakSuggestions")
+        assert!(
+            members.len() >= 2
+                && members.iter().all(|member| {
+                    std::path::Path::new(member)
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("py"))
+                }),
+            "cycle locations are repository-relative file paths: {members:?}"
+        );
+        assert!(
+            cycle.get("breakSuggestions").is_none(),
+            "a cycle offers no symbol cut: {cycle}"
+        );
+        let status = cycle.pointer("/importCycle/status");
+        let exact = cycle.pointer("/importCycle/exact");
+        assert!(
+            status.and_then(serde_json::Value::as_str) == Some("cut")
+                && exact.and_then(serde_json::Value::as_bool) == Some(true),
+            "a 2-file cycle names an exact cut: {cycle}"
+        );
+        let cut = cycle
+            .pointer("/importCycle/cut")
             .and_then(serde_json::Value::as_array)
             .cloned()
             .unwrap_or_default();
         assert!(
-            !suggestions.is_empty(),
-            "a cycle carries at least one break suggestion: {cycle}"
+            !cut.is_empty(),
+            "a cycle names at least one import: {cycle}"
         );
-        assert!(
-            members.iter().all(|member| {
-                std::path::Path::new(member)
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("py"))
-            }),
-            "cycle locations are repository-relative file paths: {members:?}"
-        );
-        for suggestion in &suggestions {
-            let source = suggestion.get("source").and_then(serde_json::Value::as_str);
-            let target = suggestion.get("target").and_then(serde_json::Value::as_str);
-            assert!(
-                source.is_some_and(|name| !name.is_empty()),
-                "a break names its source symbol: {suggestion}"
-            );
-            assert!(
-                target.is_some_and(|name| !name.is_empty()),
-                "a break names its target symbol: {suggestion}"
-            );
-            assert!(
-                suggestion
-                    .get("weight")
-                    .and_then(serde_json::Value::as_f64)
-                    .is_some_and(|weight| weight > 0.0),
-                "a break carries a positive config-priced weight: {suggestion}"
-            );
-            assert!(
-                suggestion.get("exact").and_then(serde_json::Value::as_bool) == Some(true),
-                "a tiny scc solves exactly via the ilp: {suggestion}"
-            );
+        for removed in &cut {
+            assert_located_import_cut(removed, &members);
         }
         let detail = cycle
             .get("detail")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         assert!(
-            detail.contains("-symbol cycle;")
-                && detail.contains("unlace keeps a dependency cycle in one file")
-                && detail.contains("; to split it, break ")
-                && detail.contains("exact"),
-            "the detail states the placement consequence and first break: {detail}"
+            detail.contains("-file import cycle; to break it, remove ")
+                && detail.contains("(line ")
+                && detail.contains("exact")
+                && !detail.contains("keeps a dependency cycle in one file"),
+            "the detail names the first import to remove: {detail}"
         );
     }
 }
@@ -1852,6 +1891,100 @@ fn should_report_borderline_capacity_without_gating() {
 
     assert_eq!(outcome.code, 0, "an exactly-at-cap file never gates");
     assert_eq!(outcome.stdout.trim(), format!("no violations\n{ADVICE}"));
+}
+
+#[test]
+fn should_report_a_rust_import_cycle_as_borderline_without_gating() {
+    // cycle-rust: `parse.rs` and `render.rs` `use` each other. Rust imports carry
+    // no load order, so the cycle is listed as borderline and --fail-on cycle
+    // (which matches hard violations only) must NOT raise the reserved exit 2.
+    let root = fixture("cycle-rust");
+    let root_str = root.to_str().unwrap_or_default();
+
+    let outcome = run(&["violations", "--root", root_str, "--fail-on", "cycle"]);
+
+    assert_eq!(
+        outcome.code, 0,
+        "a borderline cycle never gates: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("[borderline]")
+            && outcome
+                .stdout
+                .contains("its language's imports carry no load order"),
+        "the cycle is still listed with its reason: {}",
+        outcome.stdout
+    );
+}
+
+/// A throwaway two-file TypeScript cycle: `a.ts` and `b.ts` import each other
+/// and `a.ts` reads `b` only inside a function, while `b.ts` runs `b_body`.
+fn ts_cycle_root(name: &str, b_body: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("unlace-accept-{name}-{}", stamp()));
+    let src = root.join("src");
+    let _ = std::fs::create_dir_all(&src);
+    let _ = std::fs::write(
+        src.join("a.ts"),
+        "import { b } from './b';\nexport function a(): number {\n  return b() + 1;\n}\n",
+    );
+    let _ = std::fs::write(
+        src.join("b.ts"),
+        format!("import {{ a }} from './a';\n{b_body}"),
+    );
+    root
+}
+
+#[test]
+fn should_report_a_function_only_typescript_cycle_as_borderline_without_gating() {
+    // both imports are read only inside function bodies, so loading either
+    // module first runs nothing of the other: the cycle is borderline and
+    // --fail-on cycle does not gate.
+    let root = ts_cycle_root(
+        "ts-deferred-cycle",
+        "export function b(): number {\n  return 1;\n}\nexport function c(): number {\n  return a();\n}\n",
+    );
+    let root_str = root.to_str().unwrap_or_default();
+
+    let outcome = run(&["violations", "--root", root_str, "--fail-on", "cycle"]);
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        outcome.code, 0,
+        "a function-only cycle never gates: {}{}",
+        outcome.stdout, outcome.stderr
+    );
+    assert!(
+        outcome.stdout.contains("[borderline]")
+            && outcome.stdout.contains("no import in it runs at load time"),
+        "the cycle is listed as borderline with its reason: {}",
+        outcome.stdout
+    );
+}
+
+#[test]
+fn should_report_a_typescript_cycle_with_a_top_level_call_as_a_gating_violation() {
+    // `b.ts` calls the imported `a` at its top level, so the import runs at
+    // load time and the same cycle is a violation that gates.
+    let root = ts_cycle_root(
+        "ts-eager-cycle",
+        "export function b(): number {\n  return 1;\n}\nexport const c = a();\n",
+    );
+    let root_str = root.to_str().unwrap_or_default();
+
+    let outcome = run(&["violations", "--root", root_str, "--fail-on", "cycle"]);
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        outcome.code, 2,
+        "a load-time cycle gates: {}{}",
+        outcome.stdout, outcome.stderr
+    );
+    assert!(
+        outcome.stdout.contains("[violation]") && !outcome.stdout.contains("[borderline]"),
+        "the cycle is listed as a violation: {}",
+        outcome.stdout
+    );
 }
 
 #[test]
@@ -3059,9 +3192,10 @@ fn should_reject_a_zero_seeds_per_candidate_from_config() {
 #[test]
 fn should_populate_conditional_splits_for_an_over_cap_scc() {
     // cyclic-oversized carries a three-file import cycle whose SCC exceeds the
-    // file cap: every candidate in both modes shares the same conditional split,
-    // its preconditions byte-identical to the cycle violation's break
-    // suggestions and its resulting file count ceil-packed to two.
+    // file cap: the cycle finding names its import cut (ADR-35), while every
+    // candidate in both modes shares the same conditional split, whose
+    // preconditions stay symbol edge breaks and whose resulting file count
+    // ceil-packs to two.
     let root = fixture("cyclic-oversized");
     let root_str = root.to_str().unwrap_or_default();
 
@@ -3079,17 +3213,17 @@ fn should_populate_conditional_splits_for_an_over_cap_scc() {
 
     assert_eq!(outcome.code, 0, "analyze exits 0");
     let parsed: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap_or_default();
-    let suggestions = parsed
+    let cut = parsed
         .pointer("/current/sharedFindings")
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .find_map(|violation| violation.get("breakSuggestions"))
+        .find_map(|violation| violation.pointer("/importCycle/cut"))
         .cloned()
         .unwrap_or_default();
     assert!(
-        suggestions.as_array().is_some_and(|list| !list.is_empty()),
-        "the cycle violation carries break suggestions: {suggestions}"
+        cut.as_array().is_some_and(|list| list.len() == 1),
+        "the three-file ring is broken by one import: {cut}"
     );
     for mode in ["anchored", "greenfield"] {
         let candidates = parsed
@@ -3105,10 +3239,12 @@ fn should_populate_conditional_splits_for_an_over_cap_scc() {
                 .unwrap_or_default();
             assert_eq!(splits.len(), 1, "{mode} candidates carry the one split");
             let split = splits.first().cloned().unwrap_or_default();
-            assert_eq!(
-                split.get("preconditions"),
-                Some(&suggestions),
-                "{mode} split preconditions mirror the break suggestions"
+            assert!(
+                split
+                    .get("preconditions")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|edges| !edges.is_empty()),
+                "{mode} split preconditions name symbol edges"
             );
             assert_eq!(
                 split
@@ -3443,4 +3579,120 @@ fn should_emit_real_repo_relative_paths_in_every_move_and_advice_record() {
         );
         let _ = std::fs::remove_file(&result);
     }
+}
+
+/// A throwaway Python root holding `files` as `(path, contents)` pairs.
+fn python_root(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("unlace-accept-{name}-{}", stamp()));
+    for (path, contents) in files {
+        let file = root.join(path);
+        if let Some(parent) = file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(file, contents);
+    }
+    root
+}
+
+/// A Python package whose `a.py` imports a sibling no file answers to, so it
+/// states no imports and the cycle coverage is partial.
+const PARTIAL_COVERAGE: [(&str, &str); 3] = [
+    ("pkg/__init__.py", ""),
+    ("pkg/a.py", "from .ghost import g\nfrom .b import b\n"),
+    ("pkg/b.py", "def b():\n    return 1\n"),
+];
+
+#[test]
+fn should_gate_partial_cycle_coverage_only_under_fail_on_cycle_coverage() {
+    let root = python_root("partial-coverage", &PARTIAL_COVERAGE);
+    let root_str = root.to_str().unwrap_or_default();
+
+    let plain = run(&["violations", "--root", root_str]);
+    let ungated = run(&["violations", "--root", root_str, "--fail-on", "cycle"]);
+    let kebab = run(&[
+        "violations",
+        "--root",
+        root_str,
+        "--fail-on",
+        "cycle-coverage",
+    ]);
+    let camel = run(&[
+        "violations",
+        "--root",
+        root_str,
+        "--fail-on",
+        "cycleCoverage",
+    ]);
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        plain.code, 0,
+        "partial coverage alone never gates: {}",
+        plain.stdout
+    );
+    assert_eq!(
+        ungated.code, 0,
+        "--fail-on cycle ignores coverage: {}",
+        ungated.stdout
+    );
+    assert!(
+        plain
+            .stdout
+            .contains("Cycle analysis is partial: 1 file states no imports"),
+        "the coverage note names the gap: {}",
+        plain.stdout
+    );
+    assert_eq!(
+        kebab.code, 2,
+        "cycle-coverage gates partial coverage: {}",
+        kebab.stdout
+    );
+    assert_eq!(
+        camel.code, 2,
+        "cycleCoverage gates partial coverage: {}",
+        camel.stdout
+    );
+}
+
+#[test]
+fn should_find_a_python_src_layout_cycle_through_its_installed_names() {
+    // `src/pkg/a.py` and `src/pkg/b.py` import each other as `pkg.b` / `pkg.a`,
+    // the names an installed src-layout package has; both run at load time.
+    let root = python_root(
+        "src-layout-cycle",
+        &[
+            ("src/pkg/__init__.py", ""),
+            (
+                "src/pkg/a.py",
+                "from pkg.b import b\n\ndef a():\n    return b()\n",
+            ),
+            ("src/pkg/b.py", "import pkg.a\n\ndef b():\n    return 1\n"),
+        ],
+    );
+    let root_str = root.to_str().unwrap_or_default();
+
+    let outcome = run(&[
+        "violations",
+        "--root",
+        root_str,
+        "--fail-on",
+        "cycle,cycle-coverage",
+    ]);
+
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        outcome.code, 2,
+        "the src-layout cycle is seen and gates: {}{}",
+        outcome.stdout, outcome.stderr
+    );
+    assert!(
+        outcome.stdout.contains("src/pkg/a.py") && outcome.stdout.contains("src/pkg/b.py"),
+        "the cycle names both files: {}",
+        outcome.stdout
+    );
+    assert!(
+        !outcome.stdout.contains("Cycle analysis"),
+        "{}",
+        outcome.stdout
+    );
 }

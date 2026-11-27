@@ -289,6 +289,22 @@ symbol = "charge_card"
 path = "src/billing/helpers/charge.py"
 because = "..."
 
+# A cross-file cycle names an import cut (ADR-35). Read from the CURRENT
+# layout's findings (every profile, deduplicated), never a candidate, so it
+# takes no mode. Some cycle finding must span every listed file, and every
+# such finding must name at least one import to remove, each between two of
+# its files and each with its statement located. A finding offering only
+# symbol cuts (1.0.0's same-file `applyAdapters -> recognizeAdapter`), an
+# empty cut, or an unavailable cut fails. File paths are full repo-relative
+# paths, validated against the census at load. The optional `expect` pins one
+# import the cut must name: its importer and imported file (census-checked,
+# different), and optionally the 1-based line one of its statements starts
+# on. A cut that removes other imports but not this one fails.
+[[assert.cycle_import_cut]]
+files = ["src/parser/adapters.ts", "src/parser/build.ts"]
+expect = { importer = "src/parser/adapters.ts", imported = "src/parser/build.ts", line = 7 }
+because = "..."
+
 # SC-5: a falsified move never reaches the `Recommended` tier. Read from the
 # result's cross-profile `advice` (`recommended` / `reviewCandidates`), never
 # a candidate tree: aggregation already folds every executed profile into one
@@ -368,6 +384,7 @@ Per-kind keys (missing-required and unknown alike fail loud):
 | name_alignment | `min_ratio`, `min_members` | `mode` |
 | capacity_relief | `mode` | — |
 | non_inversion | — | — |
+| cycle_import_cut | `files` (≥2) | `expect` (`importer`, `imported`, optional `line`) |
 | advice_tier | `path`; exactly one of `max_tier`/`min_tier`/`exact_tier` | `symbol`, `to` |
 | recommended_guard (at most one per block) | — | — |
 

@@ -528,6 +528,7 @@ mod tests {
             capacity_relief: Vec::new(),
             non_inversion: Vec::new(),
             preserve_symbol_home: Vec::new(),
+            cycle_import_cut: Vec::new(),
             advice_tier: Vec::new(),
             recommended_guard: Vec::new(),
         }

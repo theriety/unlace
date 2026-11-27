@@ -48,6 +48,10 @@ pub struct AssertBlock {
     /// symbol-grain relocation must not churn homes the best state keeps).
     #[serde(default)]
     pub preserve_symbol_home: Vec<PreserveSymbolHome>,
+    /// File sets whose cycle finding must name an import cut (ADR-35: a
+    /// cross-file cycle never offers only symbol cuts).
+    #[serde(default)]
+    pub cycle_import_cut: Vec<CycleImportCut>,
     /// Moves whose cross-profile advice tier is capped or pinned (SC-5: a
     /// move the target falsifies never reaches `Recommended`).
     #[serde(default)]
@@ -132,6 +136,38 @@ pub struct RecommendedGuard {
 /// Default candidate index: the best-scoring candidate.
 fn default_candidate() -> u32 {
     1
+}
+
+/// A cross-file cycle whose finding must name the imports to remove.
+///
+/// Read from the current layout's findings, never a candidate: some cycle
+/// finding must span every listed file, and each such finding must name at
+/// least one import between two of its files, with the statement located.
+/// A finding that offers only symbol cuts, or reports its cut unavailable,
+/// fails. With `expect`, each such finding's cut must also name that import.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CycleImportCut {
+    /// Full repo-relative paths of files on the cycle.
+    pub files: Vec<String>,
+    /// The import the cut must name, when pinned.
+    #[serde(default)]
+    pub expect: Option<ExpectedImport>,
+    /// Why the cycle exists and must be cut at an import.
+    pub because: String,
+}
+
+/// One import a `cycle_import_cut` pin expects in the cut.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedImport {
+    /// Full repo-relative path of the file holding the import.
+    pub importer: String,
+    /// Full repo-relative path of the file it loads.
+    pub imported: String,
+    /// The 1-based line one of its statements must start on, when pinned.
+    #[serde(default)]
+    pub line: Option<u32>,
 }
 
 /// A symbol that must keep its home file in the asserted candidate tree.

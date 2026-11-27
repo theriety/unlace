@@ -335,6 +335,7 @@ mod tests {
                 files_by_language: std::collections::BTreeMap::new(),
             },
             current: unlace_engine::CurrentTree {
+                cycle_coverage: unlace_engine::CycleCoverage::default(),
                 tree: unlace_engine::ContainerNode {
                     name: "r".to_owned(),
                     level: unlace_engine::Level::File,

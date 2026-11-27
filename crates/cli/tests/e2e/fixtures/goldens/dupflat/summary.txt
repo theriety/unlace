@@ -5,8 +5,9 @@ All findings and moves are suggestions. Applying them may break the build; use y
 
 Structural findings
 Shared findings (3)
-  - cycle [violation] `dupflat/alpha.py`/`dupflat/beta.py` — 2-symbol cycle; unlace keeps a
-    dependency cycle in one file; to split it, break `beta_step` -> `alpha_step` (w=1.0, exact)
+  - cycle [violation] `dupflat/alpha.py`/`dupflat/beta.py` — 2-file import cycle; to break it,
+    remove `dupflat.beta` (line 3) from `dupflat/alpha.py`, which carries 1 symbol reference
+    (`alpha_step` -> `beta_step`) (exact)
   - polarity [violation] at `dupflat/service.py`, `dupflat/conftest.py`: production symbol `serve`
     (dupflat/service.py) depends on test code `sample_fixture` (dupflat/conftest.py)
   - testOnly [violation] at `dupflat/only_tests.py`, `helper`: Only tests in this repo use

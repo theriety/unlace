@@ -249,6 +249,7 @@ fn breach_violation(
             .real_location()
             .unwrap_or_else(|| vec![fallback.join("/")]),
         detail: breach.describe(fallback),
+        import_cycle: None,
         break_suggestions: None,
         capacity: Some(breach),
     })
