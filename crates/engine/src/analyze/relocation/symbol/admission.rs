@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use unlace_ir::laminar::{Companions, effective_directory};
 use unlace_ir::{ContainerId, Node, NodeKind, ScopeLevel};
 
 use crate::analyze::relocation::CandidateTree;
@@ -64,16 +65,19 @@ impl<'a> Admission<'a> {
             .into_iter()
             .filter_map(|(file, (has_type, has_symbol))| (has_type && !has_symbol).then_some(file))
             .collect();
+        // a folder companion is as deep as its folder's files (ADR-31), so the
+        // depth rule never reads its entry as a shallower sibling to hoist into.
+        let companions = Companions::from_facts(&snapshot.ir().file_facts);
         let file_depth = assembled
             .tree
             .containers()
             .iter()
             .filter(|container| container.level == ScopeLevel::File)
             .map(|container| {
-                let depth = container
-                    .name
-                    .rsplit_once('/')
-                    .map_or(0, |(directory, _)| directory.split('/').count());
+                let depth = effective_directory(&container.name, &companions)
+                    .split('/')
+                    .filter(|segment| !segment.is_empty())
+                    .count();
                 (container.id, depth)
             })
             .collect();

@@ -1674,6 +1674,50 @@ fn should_stay_silent_when_a_scope_holds_only_the_homes_own_definition_file() {
     assert_eq!((ladder.declared, ladder.needed), (None, None));
 }
 
+#[test]
+fn should_place_a_folder_companion_under_its_folder_when_merging() {
+    let fragment = |path: &str, facts: Vec<FileFact>| IrFragment {
+        nodes: vec![node(0, "a", 0)],
+        containers: vec![container(0, path)],
+        file_facts: facts,
+        ..IrFragment::default()
+    };
+    let merged = merge_fragments(
+        vec![
+            fragment(
+                "src/tree/validation.ts",
+                vec![FileFact::folder_companion(
+                    "src/tree/validation.ts",
+                    "src/tree/validation",
+                )],
+            ),
+            fragment("src/tree/validation/shape.ts", Vec::new()),
+        ],
+        "pkg",
+        &Layout::default(),
+    );
+    let containers = merged.containers.containers();
+    let folder_of = |file: &str| {
+        containers
+            .iter()
+            .find(|container| container.name == file)
+            .and_then(|container| container.parent)
+            .and_then(|parent| containers.iter().find(|container| container.id == parent))
+            .map(|folder| folder.name.to_string())
+    };
+
+    // the entry and the folder's file share the folder; the entry keeps its
+    // physical name.
+    assert_eq!(
+        folder_of("src/tree/validation.ts").as_deref(),
+        Some("pkg/src/tree/validation")
+    );
+    assert_eq!(
+        folder_of("src/tree/validation/shape.ts"),
+        folder_of("src/tree/validation.ts")
+    );
+}
+
 /// Builds a value import of `imported` stated on line 1 of `importer`.
 fn import(importer: &str, imported: &str) -> FileImport {
     FileImport {

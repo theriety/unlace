@@ -352,6 +352,24 @@ fn should_never_move_a_file_the_adapter_marks_as_an_entry() {
 }
 
 #[test]
+fn should_never_move_a_folder_companion_apart_from_its_folder() {
+    // `task.ts` is the entry of `source/module/task/` (ADR-31). Like
+    // `task/index.ts` it is not a sibling that may leave its folder, so it is
+    // pinned the way an entry file is.
+    let mut ir = exact_mirror_ir(false, false, "task.ts", "spec/module/task.spec.ts", None);
+    ir.file_facts.push(FileFact::folder_companion(
+        "source/module/task.ts",
+        "source/module/task",
+    ));
+    let json = serialized_analysis(&assemble(ir), &mirror_config());
+
+    assert!(
+        source_move(&json, "source/module/task.ts").is_none(),
+        "a folder companion is pinned: {json}"
+    );
+}
+
+#[test]
 fn should_not_change_a_source_move_when_no_mirror_exists() {
     let snapshot = exact_mirror_snapshot(false, false);
     let json = serialized_analysis(&snapshot, &mirror_config());

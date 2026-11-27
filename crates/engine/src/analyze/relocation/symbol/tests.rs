@@ -442,6 +442,7 @@ fn file_info(container: u32, path: &str, sloc: u32) -> FileInfo {
         name: SmolStr::new(path),
         production_sloc: sloc,
         namespace: SmolStr::new(""),
+        directory: SmolStr::new(path.rsplit_once('/').map_or("", |(directory, _)| directory)),
         home: LaminarHome {
             folder: SmolStr::new(""),
             domain: SmolStr::new(""),
@@ -4143,4 +4144,27 @@ fn should_pin_only_the_production_symbol_a_start_fact_names_in_its_file() {
         super::polish::start_symbol_nodes(&ir_with("c.rs")),
         BTreeSet::new()
     );
+}
+
+#[test]
+fn should_count_a_folder_companion_as_deep_as_its_folder() -> Result<(), String> {
+    // `right/destination.ts` is the entry of `right/destination/` (ADR-31): a
+    // move into it from `left/` goes one level deeper, so the depth rule vetoes
+    // the move the equal-depth witness above admits.
+    let mut ir = symbol_depth_snapshot(NodeKind::Symbol, "left", "right")
+        .ir()
+        .clone();
+    ir.file_facts.push(unlace_ir::FileFact::folder_companion(
+        "right/destination.ts",
+        "right/destination",
+    ));
+    let snapshot = Snapshot::assemble(ir).map_err(|error| error.to_string())?;
+
+    let (accepted, relocated) = relocates_first_symbol(&snapshot);
+
+    assert!(
+        !accepted && relocated.is_empty(),
+        "a companion is as deep as its folder; relocations {relocated:?}"
+    );
+    Ok(())
 }

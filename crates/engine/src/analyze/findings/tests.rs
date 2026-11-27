@@ -1,6 +1,7 @@
 #![allow(clippy::assertions_on_constants)]
 
 use std::collections::BTreeMap;
+use unlace_ir::laminar::Companions;
 
 use smol_str::SmolStr;
 use unlace_ir::{
@@ -774,7 +775,7 @@ fn should_count_domain_capacity_by_top_level_directory_subtrees() {
             walk_all_capacity(
                 &dto,
                 &config.profiles.anchored.capacity,
-                &RealRoots::from_tree(&tree),
+                &RealRoots::from_tree(&tree, &Companions::default()),
             )
         })
         .unwrap_or_default();
@@ -1671,4 +1672,44 @@ fn should_name_a_polarity_side_outside_any_file_by_its_symbol_alone() {
             .collect::<Vec<_>>(),
         ["production symbol `prod` depends on test code `helper` (src/helper.ts)"]
     );
+}
+
+#[test]
+fn should_count_a_folder_companion_as_an_entry_of_its_folder() {
+    // `block.ts` is the entry of `block/` (ADR-31): it counts in `block/`,
+    // not as a third entry of `lexer/` beside `types.ts` and `block/`.
+    let paths: Vec<SmolStr> = [
+        "src/lexer/types.ts",
+        "src/lexer/block.ts",
+        "src/lexer/block/leaf.ts",
+        "src/lexer/block/table.ts",
+    ]
+    .into_iter()
+    .map(SmolStr::new)
+    .collect();
+    let facts = [unlace_ir::FileFact::folder_companion(
+        "src/lexer/block.ts",
+        "src/lexer/block",
+    )];
+    let companions = Companions::from_facts(&facts);
+    let layout = Layout {
+        package_roots: Vec::new(),
+        source_roots: vec![SmolStr::new("src")],
+    };
+    let tree =
+        unlace_ir::laminar::build_laminar_tree_with_companions(&paths, "mdc", &layout, &companions)
+            .tree;
+
+    let (entries, real_folders) =
+        crate::analyze::findings::physical::physical_folders_repository_relative(
+            &tree,
+            &companions,
+        );
+    let by_real: BTreeMap<&str, u32> = entries
+        .iter()
+        .filter_map(|(path, count)| Some((real_folders.get(path)?.as_str(), *count)))
+        .collect();
+
+    assert_eq!(by_real.get("src/lexer"), Some(&2), "{by_real:?}");
+    assert_eq!(by_real.get("src/lexer/block"), Some(&3), "{by_real:?}");
 }

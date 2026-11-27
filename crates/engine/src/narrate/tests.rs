@@ -86,6 +86,7 @@ fn plain_facts() -> FileFacts {
         test_case_files: BTreeSet::new(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 15,
+        companions: Companions::default(),
     }
 }
 
@@ -679,6 +680,7 @@ fn should_follow_a_spec_files_subject_into_its_folder() {
         test_case_files: ["src/io/app.spec.ts".to_owned()].into_iter().collect(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 15,
+        companions: Companions::default(),
     };
 
     let moves = narrate(&current, &candidate, &facts);
@@ -732,6 +734,7 @@ fn should_narrate_a_co_moved_spec_as_following_its_twin() {
         test_case_files: ["src/core/app.spec.ts".to_owned()].into_iter().collect(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 15,
+        companions: Companions::default(),
     };
 
     let moves = narrate(&start, &candidate, &facts);
@@ -771,6 +774,7 @@ fn should_narrate_a_shadow_test_file_as_following_its_subject() {
             .into_iter()
             .collect(),
         folder_cap: 15,
+        companions: Companions::default(),
     };
 
     let moves = narrate(&current, &candidate, &facts);
@@ -812,6 +816,7 @@ fn should_not_move_a_spec_when_only_its_domain_label_is_regrouped() {
         test_case_files: ["app.spec.ts".to_owned()].into_iter().collect(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 15,
+        companions: Companions::default(),
     };
 
     let moves = narrate(&current, &candidate, &facts);
@@ -833,6 +838,7 @@ fn should_explain_a_move_out_of_an_over_cap_folder() {
         test_case_files: BTreeSet::new(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 3,
+        companions: Companions::default(),
     };
 
     let moves = narrate(&current, &candidate, &facts);
@@ -891,6 +897,7 @@ fn should_attribute_cap_relief_to_the_dominant_over_cap_origin() {
         test_case_files: BTreeSet::new(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 3,
+        companions: Companions::default(),
     };
 
     let moves = narrate(&current, &candidate, &facts);
@@ -945,6 +952,7 @@ fn should_attribute_tied_cap_relief_to_the_first_over_cap_origin() {
         test_case_files: BTreeSet::new(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 3,
+        companions: Companions::default(),
     };
 
     let moves = narrate(&files(None), &files(Some(3)), &facts);
@@ -987,6 +995,7 @@ fn should_explain_a_move_by_its_strongest_dependency_pull() {
         test_case_files: BTreeSet::new(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 15,
+        companions: Companions::default(),
     };
 
     let moves = narrate(&current, &candidate, &facts);
@@ -1147,6 +1156,7 @@ fn group_reason_for(
         test_case_files: BTreeSet::new(),
         shadow_test_files: BTreeSet::new(),
         folder_cap: 2,
+        companions: Companions::default(),
     };
     reason::group_reason(&reason::GroupContext {
         files: &files,
@@ -1305,4 +1315,39 @@ fn should_narrate_only_files_the_current_tree_places() {
         .collect();
 
     assert_eq!(narrated, vec!["app/a/x.ts"]);
+}
+
+#[test]
+fn should_place_a_folder_companion_in_its_folder_without_moving_it() {
+    // `validation.ts` is the entry of `validation/` (ADR-31): its placement is
+    // that folder, and moving the folder's file `shape.ts` out narrates only
+    // that file, from the folder's real path.
+    let paths: Vec<SmolStr> = [
+        "src/tree/traversal.ts",
+        "src/tree/validation.ts",
+        "src/tree/validation/shape.ts",
+    ]
+    .into_iter()
+    .map(SmolStr::new)
+    .collect();
+    let facts = [unlace_ir::FileFact::folder_companion(
+        "src/tree/validation.ts",
+        "src/tree/validation",
+    )];
+    let companions = Companions::from_facts(&facts);
+    let layout = unlace_ir::Layout {
+        package_roots: Vec::new(),
+        source_roots: vec![SmolStr::new("src")],
+    };
+    let current =
+        unlace_ir::laminar::build_laminar_tree_with_companions(&paths, "mdc", &layout, &companions)
+            .tree;
+
+    let (before, after) = physical_relocation_folders(&current, &current, &companions);
+
+    assert_eq!(
+        before.get("mdc/src/tree/validation.ts"),
+        Some(&strings(&["mdc", "src", "tree", "validation"]))
+    );
+    assert_eq!(before, after);
 }
