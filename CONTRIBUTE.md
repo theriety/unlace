@@ -52,6 +52,32 @@ cargo test -p unlace-cli --test parity            # the e2e parity + golden file
 cargo test -p unlace-cli --test cli_acceptance    # the e2e acceptance file
 ```
 
+### Tests use a small standard library
+
+On its first query after a Rust-fixture load, rust-analyzer indexes the whole standard library, which makes a load cost about 1.7 s however small the fixture is. So tests point it at a small stand-in, [`test-support/mini-sysroot`](test-support/mini-sysroot/README.md): rust-analyzer's own `minicore` plus thin `alloc` and `std` facades. A load then takes about 0.2 s, and the goldens stay byte-identical.
+
+The switch is the target runner in [`.cargo/config.toml`](.cargo/config.toml). `cargo test` and `cargo nextest run` start every test binary through [`test-support/run-test.sh`](test-support/run-test.sh), which sets `RUST_SRC_PATH` to the small library for binaries directly in a `target/.../deps/` directory; the `unlace` binaries a test spawns inherit it. `cargo bench` binaries sit there too, so a benchmark that loads Rust would measure the small library. `cargo run`, `cargo install`, doctests and any `unlace` you run yourself load the real standard library. The runner is Unix-only, so on Windows the tests load the real library and run slower. A runner of your own replaces it: one set for your host triple (in your cargo config or `CARGO_TARGET_<TRIPLE>_RUNNER`) wins, and the tests quietly load the real library; a second `[target.'cfg(..)'] runner` that also matches makes cargo refuse to run.
+
+Test binaries named `real_std` keep the real library, so analysis is still checked against it:
+
+- `crates/adapter-rust/tests/real_std.rs` repeats the two binding cases whose results depend on std items.
+- `crates/engine/tests/real_std.rs` checks a finding whose only use sits inside `assert_eq!`.
+- `crates/cli/tests/real_std.rs` checks library↔CLI parity and the summary golden for the `rust` fixture.
+
+Name a new test binary `real_std` only when it must see the real library: each of its loads pays the full cost.
+
+The small library is a stand-in, not a copy. A fixture that names a std item the small library lacks still passes, but against different input: rust-analyzer can't resolve the item, and the adapter falls back to binding it by name, which can add an edge the real library wouldn't. CI runs only the `real_std` binaries against the real library, so when a fixture starts using new std items, run the whole suite against the real library locally:
+
+```sh
+UNLACE_REAL_STD=1 cargo nextest run --workspace
+```
+
+When a fixture needs an item the small library lacks, add it by hand to `alloc` or `std`, or after the `// END minicore` line in `core`. Give macros real expansions of their arguments, or the references inside them stop resolving. The part of `core` between the `minicore` markers comes from the `ra_ap_test_utils` crate in `Cargo.lock`. After an `ra_ap_*` upgrade, the `mini_sysroot` test fails until you regenerate that part:
+
+```sh
+UNLACE_BLESS_MINICORE=1 cargo test -p unlace-adapter-rust --test mini_sysroot
+```
+
 ## The e2e suite
 
 The CLI's end-to-end coverage lives in two files under `crates/cli/tests/e2e`, layered deliberately so each owns exactly one kind of oracle.

@@ -16,6 +16,8 @@ exclude = [
     "**/.venv/**",
     "**/tests/**/fixtures/**",
     "crates/eval/fixtures/**",
+    # the test-only standard library rust-analyzer loads while tests run
+    "test-support/mini-sysroot/**",
 ]
 # Directory names treated as transparent below each package root, so a source
 # file and its test share a folder (`source_roots` is accepted as an alias).

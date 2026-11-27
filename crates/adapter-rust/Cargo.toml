@@ -26,5 +26,10 @@ ra_ap_project_model = "0.0.336"
 ra_ap_syntax = "0.0.336"
 ra_ap_vfs = "0.0.336"
 
+[dev-dependencies]
+# rebuilds the test-only std's `core` (tests/mini_sysroot.rs); keep it on the
+# version of the other ra_ap_* crates
+ra_ap_test_utils = "0.0.336"
+
 [lints]
 workspace = true
