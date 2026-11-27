@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use unlace_ir::{ContainerId, Node, ScopeLevel};
 
 use crate::analyze::relocation::{CandidateTree, PipelineSolver};
-use crate::result::{SymbolKind, SymbolMove};
+use crate::result::{SymbolKind, SymbolMove, TermShift};
 
 use super::outcome::SymbolOutcome;
 
@@ -96,6 +96,13 @@ impl PipelineSolver<'_> {
                     .to_owned(),
                 delta: -relocation.delta,
                 broken_imports: u32::try_from(severed.len()).unwrap_or(u32::MAX),
+                terms: Some(TermShift {
+                    before: relocation.before.into(),
+                    after: relocation.after.into(),
+                }),
+                fold: relocation
+                    .fold
+                    .and_then(|file| current_name.get(&file.0).map(|name| (*name).to_owned())),
             });
         }
         moves
@@ -104,7 +111,7 @@ impl PipelineSolver<'_> {
 
 #[cfg(test)]
 mod tests {
-    use unlace_ir::{NodeKind, Polarity, ScopeLevel, Snapshot};
+    use unlace_ir::{ContainerId, NodeKind, Polarity, ScopeLevel, Snapshot};
 
     use crate::analyze::relocation::symbol::outcome::{SymbolOutcome, SymbolRelocation};
     use crate::analyze::relocation::{CandidateTree, PipelineSolver};
@@ -139,6 +146,35 @@ mod tests {
     /// Narrates `node` relocating from `source.ts` to `destination.ts` over
     /// the assembled tree, after `prune` edits that tree's placement.
     fn narrate_relocation(node: u32, prune: &dyn Fn(&mut CandidateTree)) -> Vec<SymbolMove> {
+        narrate_priced_relocation(node, prune, None, (0.0, 0.0))
+    }
+
+    /// The breakdown of a layout whose only non-zero term is `cut`.
+    fn cut_only(cut: f64) -> unlace_core::score::ScoreBreakdown {
+        unlace_core::score::ScoreBreakdown {
+            cut,
+            imbalance: 0.0,
+            naming: 0.0,
+            path: 0.0,
+            anchor: 0.0,
+            capacity: 0.0,
+            dependency_only: 0.0,
+            companion_separation: 0.0,
+            entry_inflow: 0.0,
+            unit_outflow: 0.0,
+            total: cut,
+        }
+    }
+
+    /// As [`narrate_relocation`], for a relocation that belongs to the
+    /// collision fold of file `fold` and moved the cut term from `cut.0` to
+    /// `cut.1`.
+    fn narrate_priced_relocation(
+        node: u32,
+        prune: &dyn Fn(&mut CandidateTree),
+        fold: Option<u32>,
+        cut: (f64, f64),
+    ) -> Vec<SymbolMove> {
         let snapshot = relocation_snapshot();
         let tests = TestPolicy::defaults();
         let config = AnalyzeConfig::default();
@@ -164,10 +200,12 @@ mod tests {
                     node,
                     from_file,
                     to_file,
-                    delta: 1.0,
-                    fold: None,
+                    delta: cut.0 - cut.1,
+                    before: cut_only(cut.0),
+                    after: cut_only(cut.1),
+                    fold: fold.map(ContainerId),
                 }],
-                total: 0.0,
+                total: cut.1,
             };
             solver.symbol_narrate(&assembled, &outcome)
         })
@@ -214,6 +252,33 @@ mod tests {
         });
 
         assert_eq!(broken_imports(&moves), vec![("shared_step".to_owned(), 0)]);
+    }
+
+    #[test]
+    fn should_narrate_the_term_shift_that_paid_for_a_move_and_the_fold_it_belongs_to() {
+        // node 0 leaves `area/source.ts` (container 2) as a member of that
+        // file's collision fold, cutting the cut term from 0.5 to 0.25.
+        let moves = narrate_priced_relocation(0, &keep_all, Some(2), (0.5, 0.25));
+
+        let narrated: Vec<(Option<f64>, Option<&str>, f64)> = moves
+            .iter()
+            .map(|entry| {
+                (
+                    entry.terms.map(|shift| shift.deltas().cut),
+                    entry.fold.as_deref(),
+                    entry.delta,
+                )
+            })
+            .collect();
+        assert_eq!(narrated, vec![(Some(-0.25), Some("area/source.ts"), -0.25)]);
+    }
+
+    #[test]
+    fn should_name_no_fold_for_a_fold_file_absent_from_the_snapshot() {
+        let moves = narrate_priced_relocation(0, &keep_all, Some(99), (0.5, 0.25));
+
+        let folds: Vec<Option<&str>> = moves.iter().map(|entry| entry.fold.as_deref()).collect();
+        assert_eq!(folds, vec![None]);
     }
 
     #[test]

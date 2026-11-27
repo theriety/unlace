@@ -36,13 +36,12 @@ Baseline score: 0.3759
 Fewer than the requested candidates survived; the solution space converged.
 
 greenfield — candidate 1
-  Score: 0.3759 → 0.3144; improvement +0.0615
+  Score: 0.3759 → 0.3202; improvement +0.0557
   Proposed moves
     - Move file `src/app.ts` → `src/geometry/app.ts`
       Why: pulled toward `src/geometry/rectangle.ts` — weight 2.0.
     - Move mirrored test file `src/__tests__/app.spec.ts` → `src/geometry/__tests__/app.spec.ts`;
       follows `src/app.ts`
-    - Move symbol `describe` from `src/geometry/rectangle.ts` → `src/geometry/app.ts`
     - Move type `Shape` from `src/geometry/shape.ts` → `src/geometry/rectangle.ts`
   Folder impacts
     `src`: 1 file(s) leaving · 0 entering
@@ -57,7 +56,6 @@ greenfield — candidate 1
         ├── app.ts *
         └── geometry/
             ├── rectangle.ts *
-            │   └── symbol `describe` [to src/geometry/app.ts]
             └── shape.ts *
                 └── type `Shape` [to src/geometry/rectangle.ts]
   After
@@ -67,7 +65,6 @@ greenfield — candidate 1
             ├── __tests__/
             │   └── app.spec.ts *
             ├── app.ts *
-            │   └── symbol `describe` [from src/geometry/rectangle.ts]
             ├── rectangle.ts *
             │   └── type `Shape` [from src/geometry/shape.ts]
             └── shape.ts *
@@ -83,18 +80,12 @@ thresholds; absent profiles did not select the move; conflicts name alternative 
 Advice consolidates the best candidate from each executed profile.
  Profiles share analysis-start evidence but apply their own weights and thresholds.
  Recommended (0):
- Review candidate (3):
+ Review candidate (2):
    - file `src/app.ts` → `src/geometry` · supporting [greenfield] · qualified [] · absent
    [anchored] · conflicts []
      review reasons: selected by only some executed profiles, destination evidence is below the
      configured minimum, no strict majority of executed profiles provides qualifying support for
      this destination
-   - symbol `describe` from `src/geometry/rectangle.ts` → `src/app.ts` · supporting [greenfield] ·
-   qualified [] · absent [anchored] · conflicts []
-     review reasons: selected by only some executed profiles, destination evidence is below the
-     configured minimum, structural evidence is insufficient, the destination is not sufficiently
-     stronger than the best alternative, no strict majority of executed profiles provides
-     qualifying support for this destination
    - type `Shape` from `src/geometry/shape.ts` → `src/geometry/rectangle.ts` · supporting
    [greenfield] · qualified [] · absent [anchored] · conflicts []
      review reasons: selected by only some executed profiles, destination evidence is below the

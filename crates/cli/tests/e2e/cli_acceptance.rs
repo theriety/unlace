@@ -2046,16 +2046,16 @@ fn should_exit_one_on_a_malformed_result_input_for_every_reader() {
 
 #[test]
 fn should_reject_a_result_with_an_unsupported_schema_version() {
-    // a saved result stamped with any other schemaVersion — future (999), the
-    // immediately retired v10, or v1 — must be refused up front with a remediable message, not
-    // misread field-by-field.
+    // a saved result stamped outside the readable 11..=12 range — future
+    // (999), the retired v10, or v1 — must be refused up front with a
+    // remediable message, not misread field-by-field.
     let result = analyze_to_file("rust");
     let contents = std::fs::read_to_string(&result).unwrap_or_default();
     let result_str = result.to_str().unwrap_or_default();
 
     for version in ["999", "10", "1"] {
         let stamped = contents.replace(
-            "\"schemaVersion\":11",
+            "\"schemaVersion\":12",
             &format!("\"schemaVersion\":{version}"),
         );
         assert_ne!(contents, stamped, "the version stamp was found and bumped");
@@ -2075,13 +2075,91 @@ fn should_reject_a_result_with_an_unsupported_schema_version() {
         );
         assert!(
             outcome.stderr.contains(&format!(
-                "unsupported result schemaVersion {version}; expected 11"
+                "unsupported result schemaVersion {version}; expected 11 to 12"
             )),
             "the refusal names the offending version: {}",
             outcome.stderr
         );
     }
     let _ = std::fs::remove_file(&result);
+}
+
+#[test]
+fn should_read_a_schema_eleven_result_without_term_shifts() {
+    // a v11 result predates per-move term shifts and fold paths: restamped and
+    // stripped of both, it still loads in every reading command. nested-ts
+    // narrates a symbol move, so a `SymbolMove` really deserializes without
+    // the schema-12 fields.
+    let result = analyze_to_file("nested-ts");
+    let contents = std::fs::read_to_string(&result).unwrap_or_default();
+    let mut json: serde_json::Value = serde_json::from_str(&contents).unwrap_or_default();
+    let stripped = strip_schema_twelve_fields(&mut json);
+    if let Some(version) = json.get_mut("schemaVersion") {
+        *version = serde_json::Value::from(11);
+    }
+    let written = std::fs::write(&result, json.to_string()).is_ok();
+    let result_str = result.to_str().unwrap_or_default();
+
+    let tree = run(&["tree", "--input", result_str, "--current"]);
+    let report = run(&["report", "--input", result_str]);
+
+    let _ = std::fs::remove_file(&result);
+    assert!(written, "the v11 result was written");
+    assert!(stripped > 0, "the fixture carried a term shift to strip");
+    assert_eq!(tree.code, 0, "tree reads a v11 result: {}", tree.stderr);
+    assert_eq!(
+        report.code, 0,
+        "report reads a v11 result: {}",
+        report.stderr
+    );
+}
+
+#[test]
+fn should_name_the_paying_terms_of_a_symbol_move_only_when_verbose() {
+    // nested-ts narrates a symbol move; --verbose adds its `pays:` line
+    // (schema 12 term shifts) and the default output stays unchanged.
+    let root = fixture("nested-ts");
+    let root_str = root.to_str().unwrap_or_default();
+
+    let verbose = run(&[
+        "analyze",
+        "--root",
+        root_str,
+        "--config",
+        PURE_DEFAULTS,
+        "--verbose",
+    ]);
+    let plain = run(&["analyze", "--root", root_str, "--config", PURE_DEFAULTS]);
+
+    assert_eq!(verbose.code, 0, "{}", verbose.stderr);
+    assert!(
+        verbose.stdout.contains("      pays: "),
+        "verbose output names the paying terms: {}",
+        verbose.stdout
+    );
+    assert!(
+        !plain.stdout.contains("pays: "),
+        "the default output carries no pays line: {}",
+        plain.stdout
+    );
+}
+
+/// Removes every schema-12 `terms` and `fold` member anywhere in `value`,
+/// returning how many `terms` objects it removed.
+fn strip_schema_twelve_fields(value: &mut serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(map) => {
+            let removed = usize::from(map.remove("terms").is_some());
+            map.remove("fold");
+            removed
+                + map
+                    .values_mut()
+                    .map(strip_schema_twelve_fields)
+                    .sum::<usize>()
+        }
+        serde_json::Value::Array(items) => items.iter_mut().map(strip_schema_twelve_fields).sum(),
+        _ => 0,
+    }
 }
 
 #[test]

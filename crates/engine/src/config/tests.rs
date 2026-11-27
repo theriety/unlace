@@ -1149,3 +1149,65 @@ fn should_leave_the_unselected_greenfield_profile_unchanged_during_generic_overr
 }
 
 mod rejections;
+
+#[test]
+fn should_default_the_symbol_gain_threshold_in_both_profiles() {
+    let config = AnalyzeConfig::default();
+
+    // The calibrated θ (ADR-34, calibration table).
+    assert!((DEFAULT_SYMBOL_GAIN_THRESHOLD - 1e-3).abs() < f64::EPSILON);
+
+    for profile in [&config.profiles.anchored, &config.profiles.greenfield] {
+        assert!(
+            (profile.relocation.symbol_gain_threshold - DEFAULT_SYMBOL_GAIN_THRESHOLD).abs()
+                < f64::EPSILON
+        );
+    }
+}
+
+#[test]
+fn should_parse_an_explicit_symbol_gain_threshold() {
+    let parsed = toml::from_str::<AnalyzeConfig>(
+        "[profiles.greenfield.relocation]\nsymbol-gain-threshold = 0.0\n",
+    );
+    assert!(
+        parsed.is_ok(),
+        "zero keeps only the float-dust floor: {:?}",
+        parsed.as_ref().err()
+    );
+    let config = parsed.unwrap_or_default();
+
+    assert!(
+        config
+            .profiles
+            .greenfield
+            .relocation
+            .symbol_gain_threshold
+            .abs()
+            < f64::EPSILON
+    );
+    assert!(
+        (config.profiles.anchored.relocation.symbol_gain_threshold - DEFAULT_SYMBOL_GAIN_THRESHOLD)
+            .abs()
+            < f64::EPSILON
+    );
+}
+
+#[test]
+fn should_reject_an_invalid_symbol_gain_threshold_with_its_key_path() {
+    for value in [-0.01, f64::INFINITY, f64::NAN] {
+        let mut config = AnalyzeConfig::default();
+        config.profiles.anchored.relocation.symbol_gain_threshold = value;
+
+        let result = config.validate();
+
+        assert!(
+            matches!(
+                &result,
+                Err(UnlaceError::ConfigInvalid { key: Some(key), .. })
+                    if key == "profiles.anchored.relocation.symbol-gain-threshold"
+            ),
+            "{value} is rejected at its key, got {result:?}"
+        );
+    }
+}

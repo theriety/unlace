@@ -47,6 +47,8 @@ fn symbol_move() -> SymbolMove {
         to_path: text("proj/core/b.py"),
         delta: -1.0,
         broken_imports: 0,
+        terms: None,
+        fold: None,
         display: None,
     }
 }
