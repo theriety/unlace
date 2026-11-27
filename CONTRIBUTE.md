@@ -35,6 +35,8 @@ Run everything across all seven crates:
 cargo nextest run --workspace      # or: cargo test --workspace
 ```
 
+The first build compiles every dependency with optimisation (`[profile.dev.package."*"]` in [`Cargo.toml`](Cargo.toml)), which takes a few minutes. Without that setting, rust-analyzer's crates run unoptimised and each Rust-fixture test takes about ten times longer. After that build, only unlace's own crates rebuild, and they stay unoptimised. The dependencies compile again for the first coverage run, which uses its own target directory, and after a toolchain change; a `Cargo.lock` change rebuilds only the packages it touches and their dependents.
+
 This covers three tiers, from cheapest to most integrated:
 
 1. **Unit tests** — inline `#[cfg(test)] mod tests` modules inside each crate's `src`. They pin individual algorithms and data structures (most live in `crates/core`).

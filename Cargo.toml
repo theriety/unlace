@@ -72,3 +72,11 @@ lossy_float_literal = "deny"
 large_enum_variant = "deny"
 large_stack_arrays = "deny"
 shadow_unrelated = "deny"
+
+# Dependencies build optimised in dev and test builds. Every Rust-fixture test
+# loads a project through rust-analyzer, and unoptimised ra_ap_* crates make
+# that load about ten times slower. `"*"` matches only packages outside the
+# workspace, so unlace's own crates still build unoptimised: edits rebuild as
+# fast as before, and coverage instruments the same code.
+[profile.dev.package."*"]
+opt-level = 2

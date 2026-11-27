@@ -33,6 +33,11 @@ jobs:
         run: rustup toolchain install
       - name: Setup Build Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # rust-cache never hashes the root workspace manifest, so a [profile]
+          # change would restore stale dependencies and never save fresh ones;
+          # the cost: any root Cargo.toml edit starts both jobs from a cold cache
+          key: ${{ hashFiles('Cargo.toml') }}
       - name: Lint Test
         # read-only checks, so they run first and fail fast; unlike the TypeScript
         # template nothing here rewrites files that could widen a later step's scope
@@ -62,6 +67,11 @@ jobs:
           rustup component add llvm-tools-preview
       - name: Setup Build Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # rust-cache never hashes the root workspace manifest, so a [profile]
+          # change would restore stale dependencies and never save fresh ones;
+          # the cost: any root Cargo.toml edit starts both jobs from a cold cache
+          key: ${{ hashFiles('Cargo.toml') }}
       - name: Setup cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage Test
