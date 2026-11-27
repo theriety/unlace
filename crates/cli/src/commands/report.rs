@@ -242,8 +242,8 @@ mod tests {
 
     #[test]
     fn should_write_the_report_to_a_file_when_output_is_set() {
-        let input = std::env::temp_dir().join(format!("unlace-report-in-{}.json", nanos()));
-        let output = std::env::temp_dir().join(format!("unlace-report-out-{}.md", nanos()));
+        let input = std::env::temp_dir().join(format!("unlace-report-in-{}.json", stamp()));
+        let output = std::env::temp_dir().join(format!("unlace-report-out-{}.md", stamp()));
         let _ = std::fs::write(&input, serde_json::to_vec(&sample()).unwrap_or_default());
         let args = ReportArgs {
             input: input.clone(),
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn should_fail_naming_the_sink_when_the_report_cannot_be_written() {
-        let input = std::env::temp_dir().join(format!("unlace-report-sink-{}.json", nanos()));
+        let input = std::env::temp_dir().join(format!("unlace-report-sink-{}.json", stamp()));
         let _ = std::fs::write(&input, serde_json::to_vec(&sample()).unwrap_or_default());
         let blocked = input.join("report.md");
         let to_file = ReportArgs {
@@ -290,11 +290,13 @@ mod tests {
         ));
     }
 
-    /// Returns a unique nanosecond stamp.
-    fn nanos() -> u128 {
-        std::time::SystemTime::now()
+    /// Returns a temp-path stamp: the process id, because nextest runs each test
+    /// in its own process, then the time.
+    fn stamp() -> String {
+        let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        format!("{}-{nanos}", std::process::id())
     }
 }

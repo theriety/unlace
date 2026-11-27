@@ -10,7 +10,7 @@ use unlace_engine::{
     SymbolMove,
 };
 
-use super::{analyze_to_file, nanos, run};
+use super::{analyze_to_file, run, stamp};
 
 fn saved_result() -> Result<AnalyzeResult, String> {
     static RESULT: OnceLock<Result<AnalyzeResult, String>> = OnceLock::new();
@@ -31,9 +31,8 @@ fn report(result: &AnalyzeResult) -> Result<String, String> {
 fn report_with_detail(result: &AnalyzeResult, verbose: bool) -> Result<String, String> {
     static NEXT_REPORT: AtomicUsize = AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
-        "unlace-markdown-{}-{}-{}.json",
-        std::process::id(),
-        nanos(),
+        "unlace-markdown-{}-{}.json",
+        stamp(),
         NEXT_REPORT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::write(
@@ -449,11 +448,7 @@ fn should_roundtrip_finite_analyzed_advice_through_saved_report() -> Result<(), 
 
 #[test]
 fn should_preserve_distinct_visibility_sources_in_cli_outputs() -> Result<(), String> {
-    let root = std::env::temp_dir().join(format!(
-        "unlace-visibility-{}-{}",
-        std::process::id(),
-        nanos()
-    ));
+    let root = std::env::temp_dir().join(format!("unlace-visibility-{}", stamp()));
     fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
     fs::write(
         root.join("Cargo.toml"),

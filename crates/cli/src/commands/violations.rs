@@ -414,7 +414,8 @@ mod tests {
     #[test]
     fn should_fail_naming_the_sink_when_either_face_cannot_be_written() {
         let root = std::env::temp_dir().join(format!(
-            "unlace-violations-{}",
+            "unlace-violations-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_nanos())
