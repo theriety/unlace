@@ -278,10 +278,10 @@ pub(crate) fn effective_parameter_lines(name: &str, p: &ProfileConfig) -> Vec<St
             weight(p.qualification.minimum_ambiguity_margin)
         ),
         format!(
-            "                 owner {} · role {} · source {} · destination {}",
+            "                 owner {} · role {} · advantage {} · destination {}",
             weight(p.qualification.weights.unique_owner),
             weight(p.qualification.weights.role_affinity),
-            weight(p.qualification.weights.source_cohesion),
+            weight(p.qualification.weights.destination_advantage),
             weight(p.qualification.weights.destination_cohesion)
         ),
         format!(
@@ -712,8 +712,20 @@ mod tests {
             caption_for(&MoveReason::PulledBy {
                 partner: "src/core/engine.ts".to_owned(),
                 weight: 1.0,
+                left_behind: None,
             }),
             "Why: pulled toward `src/core/engine.ts` — weight 1.0."
+        );
+        assert_eq!(
+            caption_for(&MoveReason::PulledBy {
+                partner: "src/core/engine.ts".to_owned(),
+                weight: 1.8,
+                left_behind: Some(unlace_engine::LeftBehind {
+                    partner: "src/core/sibling.ts".to_owned(),
+                    weight: 1.0,
+                }),
+            }),
+            "Why: pulled toward `src/core/engine.ts` — weight 1.8, against 1.0 to `src/core/sibling.ts` left behind."
         );
         assert_eq!(
             caption_for(&MoveReason::RelievesOverCap {
@@ -1288,6 +1300,7 @@ mod tests {
                 MoveReason::PulledBy {
                     partner: "src/deeply/nested/generators/synthographers/helpers.ts".to_owned(),
                     weight: 7.8,
+                    left_behind: None,
                 },
             )];
         }
@@ -1758,7 +1771,7 @@ mod tests {
             evidence: unlace_engine::EvidenceSignals {
                 unique_owner: 1.0,
                 role_affinity: 0.8,
-                source_cohesion: 0.7,
+                destination_advantage: 0.7,
                 destination_cohesion: 0.6,
                 producer_evidence: 0.5,
                 architectural_reach: 0.4,
@@ -1830,7 +1843,7 @@ mod tests {
             "greenfield→`shared/alternative.ts`",
             "owner 1.00",
             "role 0.80",
-            "source 0.70",
+            "advantage 0.70",
             "destination 0.60",
             "producer 0.50",
             "reach 0.40",
@@ -1898,7 +1911,7 @@ mod tests {
                 evidence: unlace_engine::EvidenceSignals {
                     unique_owner: 0.0,
                     role_affinity: 0.0,
-                    source_cohesion: 0.0,
+                    destination_advantage: 0.0,
                     destination_cohesion: 0.0,
                     producer_evidence: 0.0,
                     architectural_reach: 0.0,
@@ -2396,7 +2409,7 @@ mod tests {
             evidence: unlace_engine::EvidenceSignals {
                 unique_owner: 0.5,
                 role_affinity: 0.5,
-                source_cohesion: 0.5,
+                destination_advantage: 0.5,
                 destination_cohesion: 0.5,
                 producer_evidence: 0.5,
                 architectural_reach: 0.5,

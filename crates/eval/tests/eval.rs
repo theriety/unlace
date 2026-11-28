@@ -14,7 +14,7 @@ use unlace_eval::{EvalError, e2e_fixture_root, eval_fixture_root, harness, load_
 
 /// The compile-time-checked case table: every committed target paired with the
 /// designed defect its distance is measured against.
-const CASES: [(&str, &str); 10] = [
+const CASES: [(&str, &str); 12] = [
     ("collapse", "workspace collapse"),
     ("large-app", "proposal quality at scale"),
     ("welding", "cross-directory welding"),
@@ -25,6 +25,14 @@ const CASES: [(&str, &str); 10] = [
     ("cycle-span", "import-cycle tearing"),
     ("spec-twin-ts", "source-test mixing"),
     ("companion-folders", "companion-folder false moves"),
+    (
+        "surviving-move-ts",
+        "a justified symbol move missing from the advice",
+    ),
+    (
+        "recommended-move-ts",
+        "a Recommended move unreachable under defaults",
+    ),
 ];
 
 /// The designed defect of one case, read from [`CASES`] without indexing.
@@ -177,6 +185,21 @@ fn spec_twin_ts_witnesses_source_test_mixing() {
 #[test]
 fn companion_folders_witnesses_false_moves() {
     assert_best_state("companion-folders");
+}
+
+/// Positive pin (D3): a symbol whose only consumers sit in another folder
+/// still reaches the advice, at Review or better, as a move toward its
+/// majority consumer. Guards against a false-move fix that silences every move.
+#[test]
+fn surviving_move_ts_keeps_a_justified_symbol_move() {
+    assert_best_state("surviving-move-ts");
+}
+
+/// Positive pin (D3): the Recommended tier is reachable under the built-in
+/// defaults, for a companion type misfiled away from its sole owner.
+#[test]
+fn recommended_move_ts_reaches_recommended_under_defaults() {
+    assert_best_state("recommended-move-ts");
 }
 
 /// EVL04 coverage guard: the table covers exactly the committed target files,

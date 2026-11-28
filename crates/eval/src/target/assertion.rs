@@ -111,11 +111,6 @@ pub struct AdviceTier {
     /// Why the move may not rank higher, must rank at least so, or must rank
     /// exactly so.
     pub because: String,
-    /// Temporary peel marker: the finding id and cause of a pin that is red
-    /// at this layer. The pin then passes while it fails, and fails once it
-    /// passes so the marker is removed (see CONTRACT.md).
-    #[serde(default)]
-    pub expect_fail: Option<String>,
 }
 
 /// The SC-5 guard: every `Recommended` advice entry must leave each of the
@@ -126,11 +121,6 @@ pub struct AdviceTier {
 pub struct RecommendedGuard {
     /// Why no recommended move may contradict the pinned best state.
     pub because: String,
-    /// Temporary peel marker: the finding id and cause of a pin that is red
-    /// at this layer. The pin then passes while it fails, and fails once it
-    /// passes so the marker is removed (see CONTRACT.md).
-    #[serde(default)]
-    pub expect_fail: Option<String>,
 }
 
 /// Default candidate index: the best-scoring candidate.
@@ -190,11 +180,6 @@ pub struct PreserveSymbolHome {
     pub mode: Option<FaceMode>,
     /// Why this home holds in the best state.
     pub because: String,
-    /// Temporary peel marker: the finding id and cause of a pin that is red
-    /// at this layer. The pin then passes while it fails, and fails once it
-    /// passes so the marker is removed (see CONTRACT.md).
-    #[serde(default)]
-    pub expect_fail: Option<String>,
 }
 
 /// A directory that must survive as a named container once per package that
@@ -209,11 +194,6 @@ pub struct PreserveDir {
     pub mode: Option<FaceMode>,
     /// Why the directory survives in the best state.
     pub because: String,
-    /// Temporary peel marker: the finding id and cause of a pin that is red
-    /// at this layer. The pin then passes while it fails, and fails once it
-    /// passes so the marker is removed (see CONTRACT.md).
-    #[serde(default)]
-    pub expect_fail: Option<String>,
 }
 
 /// A set of repo-relative files some folder/domain container must (or must
@@ -228,11 +208,6 @@ pub struct PathSetAssertion {
     pub mode: Option<FaceMode>,
     /// Why these files share — or never share — a container.
     pub because: String,
-    /// Temporary peel marker: the finding id and cause of a pin that is red
-    /// at this layer. The pin then passes while it fails, and fails once it
-    /// passes so the marker is removed (see CONTRACT.md).
-    #[serde(default)]
-    pub expect_fail: Option<String>,
 }
 
 /// The `any_container` scope selector for a size band.

@@ -87,6 +87,10 @@ pub enum FailureMode {
     /// Production symbols relocated across the source/test boundary into (or out
     /// of) their spec twins (FIX11).
     SourceTestMixing,
+    /// A move the code's own structure justifies, missing from the advice or
+    /// held below the tier it earns: the positive pin to the false-move
+    /// witnesses, so a fix that silences every move fails here.
+    MissedMove,
 }
 
 /// The language adapters a fixture exercises.

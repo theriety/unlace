@@ -90,7 +90,7 @@ impl EvidenceIndex<'_> {
                 consumers.insert(node.container);
             }
         }
-        let source_cohesion = ((wd - ws) / wd.max(ws).max(f64::EPSILON)).clamp(0.0, 1.0);
+        let destination_advantage = ((wd - ws) / wd.max(ws).max(f64::EPSILON)).clamp(0.0, 1.0);
         let destination_cohesion = if wall > 0.0 {
             let breadth = match neighbors.len() {
                 0 => 0.0,
@@ -104,7 +104,7 @@ impl EvidenceIndex<'_> {
         EvidenceSignals {
             unique_owner: f64::from(owners.len() == 1 && owners_in_destination == 1),
             role_affinity: jaccard_tokens(&subject_tokens, &destination_tokens),
-            source_cohesion,
+            destination_advantage,
             destination_cohesion,
             producer_evidence: if owners.is_empty() {
                 0.0
@@ -312,7 +312,7 @@ mod reach_tests {
         );
 
         assert!(at_barrel.destination_cohesion.abs() < f64::EPSILON);
-        assert!(at_barrel.source_cohesion.abs() < f64::EPSILON);
+        assert!(at_barrel.destination_advantage.abs() < f64::EPSILON);
         assert!(
             signals_at(&snapshot, 0, proposal, &conceptual("index"))
                 .architectural_reach
@@ -357,8 +357,8 @@ mod reach_tests {
         let pulled_only_away = fixture(vec![type_ref(2, 0)]);
         let pulled_both_ways = fixture(vec![type_ref(1, 0), type_ref(2, 0)]);
 
-        let away = signals_at(&pulled_only_away, 0, proposal, &place).source_cohesion;
-        let both = signals_at(&pulled_both_ways, 0, proposal, &place).source_cohesion;
+        let away = signals_at(&pulled_only_away, 0, proposal, &place).destination_advantage;
+        let both = signals_at(&pulled_both_ways, 0, proposal, &place).destination_advantage;
 
         assert!((away - 1.0).abs() < f64::EPSILON, "{away}");
         assert!(

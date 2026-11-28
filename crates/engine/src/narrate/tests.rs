@@ -1351,3 +1351,66 @@ fn should_place_a_folder_companion_in_its_folder_without_moving_it() {
     );
     assert_eq!(before, after);
 }
+
+/// Facts whose edges are `(from, to, weight)` triples.
+fn weighted_facts(edges: &[(&str, &str, f64)]) -> FileFacts {
+    let mut facts = plain_facts();
+    facts.edge_weights = edges
+        .iter()
+        .map(|(from, to, weight)| (((*from).to_owned(), (*to).to_owned()), *weight))
+        .collect();
+    facts
+}
+
+/// The F2 shape: `body` leaves `src/core` (where its importer `parent` stays)
+/// for `src/io` (where `types` lives).
+fn narrate_body_move(edges: &[(&str, &str, f64)]) -> Option<MoveReason> {
+    let current = two_folder_tree(
+        &["src/core/body.ts", "src/core/parent.ts"],
+        &["src/io/types.ts"],
+    );
+    let candidate = two_folder_tree(
+        &["src/core/parent.ts"],
+        &["src/core/body.ts", "src/io/types.ts"],
+    );
+    narrate(&current, &candidate, &weighted_facts(edges))
+        .first()
+        .map(|m| m.reason.clone())
+}
+
+#[test]
+fn should_not_narrate_a_pull_when_the_source_sibling_pulls_at_least_as_hard() {
+    let reason = narrate_body_move(&[
+        ("src/core/body.ts", "src/io/types.ts", 1.0),
+        ("src/core/parent.ts", "src/core/body.ts", 1.0),
+    ]);
+
+    assert!(
+        !matches!(reason, Some(MoveReason::PulledBy { .. })),
+        "{reason:?}"
+    );
+}
+
+#[test]
+fn should_name_both_sides_when_the_destination_pull_is_stronger() {
+    let reason = narrate_body_move(&[
+        ("src/core/body.ts", "src/io/types.ts", 1.8),
+        ("src/core/parent.ts", "src/core/body.ts", 1.0),
+    ]);
+
+    assert_eq!(
+        reason,
+        Some(MoveReason::PulledBy {
+            partner: "src/io/types.ts".to_owned(),
+            weight: 1.8,
+            left_behind: Some(crate::result::LeftBehind {
+                partner: "src/core/parent.ts".to_owned(),
+                weight: 1.0,
+            }),
+        })
+    );
+    assert_eq!(
+        reason.map(|r| r.to_string()),
+        Some("pulled by types.ts (w 1.8, vs 1.0 to parent.ts left behind)".to_owned())
+    );
+}

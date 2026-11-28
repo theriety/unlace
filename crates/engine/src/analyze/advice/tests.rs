@@ -814,7 +814,7 @@ fn should_keep_lexical_only_consensus_in_review_at_zero_thresholds() -> Result<(
         profile.qualification.weights = crate::config::QualificationWeightsConfig {
             unique_owner: 0.0,
             role_affinity: 1.0,
-            source_cohesion: 0.0,
+            destination_advantage: 0.0,
             destination_cohesion: 0.0,
             producer_evidence: 0.0,
             architectural_reach: 0.0,

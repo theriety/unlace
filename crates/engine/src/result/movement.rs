@@ -165,6 +165,17 @@ pub struct MirrorMove {
     pub to: String,
 }
 
+/// The strongest tie between the moved files and one file that stays in the
+/// source folder.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftBehind {
+    /// The full path of the file left behind.
+    pub partner: String,
+    /// The summed two-way edge weight between it and the moved files.
+    pub weight: f64,
+}
+
 /// The dominant reason a narrated change was proposed, first match wins:
 /// followed subject > cap relief > dependency pull > naming cohesion >
 /// clustering fallback.
@@ -202,6 +213,11 @@ pub enum MoveReason {
         partner: String,
         /// The summed two-way edge weight of the pull.
         weight: f64,
+        /// The strongest pull the move leaves behind in the source folder,
+        /// measured by the same rule; absent when nothing there ties to the
+        /// moved files. Results written before it existed still load.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_behind: Option<LeftBehind>,
     },
     /// The moved files share naming tokens with the destination's residents.
     NamingCohesion {
@@ -236,12 +252,24 @@ impl MirrorMove {
 
 impl MoveReason {
     /// The group-keyed path the reason names, when it names one.
-    pub(crate) fn group_keyed(&mut self) -> Option<GroupKeyed<'_>> {
+    pub(crate) fn group_keyed(&mut self) -> Vec<GroupKeyed<'_>> {
         match self {
-            Self::Follows { subject } => Some(GroupKeyed::new(subject)),
-            Self::PulledBy { partner, .. } => Some(GroupKeyed::new(partner)),
-            Self::RelievesOverCap { container, .. } => Some(GroupKeyed::new(container)),
-            Self::NamingCohesion { .. } | Self::Clustering => None,
+            Self::Follows { subject } => vec![GroupKeyed::new(subject)],
+            Self::PulledBy {
+                partner,
+                left_behind,
+                ..
+            } => {
+                let mut keyed = vec![GroupKeyed::new(partner)];
+                keyed.extend(
+                    left_behind
+                        .iter_mut()
+                        .map(|l| GroupKeyed::new(&mut l.partner)),
+                );
+                keyed
+            }
+            Self::RelievesOverCap { container, .. } => vec![GroupKeyed::new(container)],
+            Self::NamingCohesion { .. } | Self::Clustering => Vec::new(),
         }
     }
 }
@@ -281,11 +309,26 @@ impl std::fmt::Display for MoveReason {
                 "relieves {container}, which has {}",
                 unit.against_cap(*count, *cap, config_key),
             ),
-            Self::PulledBy { partner, weight } => write!(
-                f,
-                "pulled by {} (w {weight:.1})",
-                crate::narrate::basename(partner)
-            ),
+            Self::PulledBy {
+                partner,
+                weight,
+                left_behind,
+            } => {
+                write!(
+                    f,
+                    "pulled by {} (w {weight:.1}",
+                    crate::narrate::basename(partner)
+                )?;
+                if let Some(left) = left_behind {
+                    write!(
+                        f,
+                        ", vs {:.1} to {} left behind",
+                        left.weight,
+                        crate::narrate::basename(&left.partner)
+                    )?;
+                }
+                write!(f, ")")
+            }
             Self::NamingCohesion { cohesion } => {
                 write!(f, "naming cohesion {cohesion:.2} with destination")
             }
@@ -344,5 +387,69 @@ mod label_and_keyed_tests {
             }
         );
         assert_eq!(moved.to, "lib");
+    }
+}
+
+#[cfg(test)]
+mod display_fault_tests {
+    use std::fmt::Write as _;
+
+    use super::*;
+
+    /// A text sink that fails exactly one `write_str` call, chosen by
+    /// `fail_at`, and accepts every other call, so a swallowed failure lets
+    /// the formatting succeed.
+    struct FaultyText {
+        /// Zero-based index of the call that fails.
+        fail_at: usize,
+        /// Number of calls received so far.
+        calls: usize,
+        /// Text accepted by the calls that did not fail.
+        written: String,
+    }
+
+    impl std::fmt::Write for FaultyText {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            let call = self.calls;
+            self.calls += 1;
+            if call == self.fail_at {
+                return Err(std::fmt::Error);
+            }
+            self.written.push_str(text);
+            Ok(())
+        }
+    }
+
+    fn sink(fail_at: usize) -> FaultyText {
+        FaultyText {
+            fail_at,
+            calls: 0,
+            written: String::new(),
+        }
+    }
+
+    #[test]
+    fn should_surface_every_write_failure_of_a_two_sided_pull_caption() {
+        let reason = MoveReason::PulledBy {
+            partner: "src/b/partner.ts".to_owned(),
+            weight: 3.0,
+            left_behind: Some(LeftBehind {
+                partner: "src/a/kept.ts".to_owned(),
+                weight: 1.5,
+            }),
+        };
+        let mut probe = sink(usize::MAX);
+        let faithful = write!(probe, "{reason}").is_ok();
+
+        let swallowed = (0..probe.calls)
+            .filter(|fail_at| write!(sink(*fail_at), "{reason}").is_ok())
+            .count();
+
+        assert!(faithful);
+        assert_eq!(
+            probe.written,
+            "pulled by partner.ts (w 3.0, vs 1.5 to kept.ts left behind)"
+        );
+        assert_eq!(swallowed, 0);
     }
 }

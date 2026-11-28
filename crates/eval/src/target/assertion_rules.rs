@@ -110,7 +110,6 @@ impl TargetSpec {
             lift(check_advice_pin(pin))?;
         }
         lift(check_guard(block))?;
-        lift(check_expect_fail(block))?;
         Self::validate_symbol_homes(block, run, fixture)
     }
 
@@ -183,36 +182,6 @@ fn check_advice_pin(pin: &AdviceTier) -> Result<(), String> {
     }
 }
 
-/// Every temporary `expect_fail` marker names a finding and its cause: an
-/// empty reason would silence a red pin without saying why.
-fn check_expect_fail(block: &AssertBlock) -> Result<(), String> {
-    let sets = block.keep_together.iter().chain(&block.separate);
-    let mut reasons = sets
-        .map(|set| &set.expect_fail)
-        .chain(block.preserve_dir.iter().map(|dir| &dir.expect_fail))
-        .chain(
-            block
-                .preserve_symbol_home
-                .iter()
-                .map(|home| &home.expect_fail),
-        )
-        .chain(block.advice_tier.iter().map(|pin| &pin.expect_fail))
-        .chain(
-            block
-                .recommended_guard
-                .iter()
-                .map(|guard| &guard.expect_fail),
-        )
-        .flatten();
-    if reasons.any(|reason| reason.trim().is_empty()) {
-        return Err(
-            "expect_fail needs a non-empty reason: the finding id and its one-line cause"
-                .to_owned(),
-        );
-    }
-    Ok(())
-}
-
 /// A block carries at most one `recommended_guard`, each with a rationale,
 /// and only beside a mode-free pin it can enforce: the guard skips pins with
 /// their own `mode`, so without a mode-free `keep_together`, `preserve_dir` or
@@ -274,7 +243,6 @@ mod tests {
             min_tier: None,
             exact_tier,
             because: "F1".to_owned(),
-            expect_fail: None,
         }
     }
 
@@ -308,7 +276,6 @@ mod tests {
     fn guard() -> RecommendedGuard {
         RecommendedGuard {
             because: "SC-5".to_owned(),
-            expect_fail: None,
         }
     }
 
@@ -318,7 +285,6 @@ mod tests {
             path: "src/differ/inference.ts".to_owned(),
             mode,
             because: "F3".to_owned(),
-            expect_fail: None,
         }
     }
 

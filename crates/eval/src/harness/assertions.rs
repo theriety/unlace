@@ -37,28 +37,19 @@ pub(super) fn evaluate_assertions(
 ) -> (Vec<Verdict>, PairF1Report) {
     let mut verdicts = Vec::new();
     for assertion in &block.preserve_dir {
-        let faces = faces_for(assertion.mode, &block.modes).into_iter();
-        let pin = faces.map(|face| evaluate_preserve_dir(assertion, face, inputs));
-        verdicts.extend(apply_expect_fail(
-            assertion.expect_fail.as_deref(),
-            pin.collect(),
-        ));
+        for face in faces_for(assertion.mode, &block.modes) {
+            verdicts.push(evaluate_preserve_dir(assertion, face, inputs));
+        }
     }
     for assertion in &block.keep_together {
-        let faces = faces_for(assertion.mode, &block.modes).into_iter();
-        let pin = faces.map(|face| evaluate_path_set(assertion, face, inputs, true));
-        verdicts.extend(apply_expect_fail(
-            assertion.expect_fail.as_deref(),
-            pin.collect(),
-        ));
+        for face in faces_for(assertion.mode, &block.modes) {
+            verdicts.push(evaluate_path_set(assertion, face, inputs, true));
+        }
     }
     for assertion in &block.separate {
-        let faces = faces_for(assertion.mode, &block.modes).into_iter();
-        let pin = faces.map(|face| evaluate_path_set(assertion, face, inputs, false));
-        verdicts.extend(apply_expect_fail(
-            assertion.expect_fail.as_deref(),
-            pin.collect(),
-        ));
+        for face in faces_for(assertion.mode, &block.modes) {
+            verdicts.push(evaluate_path_set(assertion, face, inputs, false));
+        }
     }
     for band in &block.size_band {
         for face in faces_for(band.mode, &block.modes) {
@@ -85,12 +76,9 @@ pub(super) fn evaluate_assertions(
         verdicts.push(evaluate_non_inversion(inversion, inputs));
     }
     for home in &block.preserve_symbol_home {
-        let faces = faces_for(home.mode, &block.modes).into_iter();
-        let pin = faces.map(|face| evaluate_preserve_symbol_home(home, face, inputs));
-        verdicts.extend(apply_expect_fail(
-            home.expect_fail.as_deref(),
-            pin.collect(),
-        ));
+        for face in faces_for(home.mode, &block.modes) {
+            verdicts.push(evaluate_preserve_symbol_home(home, face, inputs));
+        }
     }
 
     let mut pair_f1: PairF1Report = Vec::new();
@@ -110,150 +98,10 @@ pub(super) fn evaluate_assertions(
     (verdicts, pair_f1)
 }
 
-/// Applies one pin's temporary `expect_fail` marker across every verdict the
-/// pin produced (all its faces at once).
-///
-/// Without a marker the verdicts pass through unchanged. With one, a pin that
-/// fails on any face is the expected witness: every verdict passes and its
-/// detail names the reason before the original observation. A marked pin that
-/// passes on every face reports one failure instead, so a stale marker is
-/// removed rather than silently hiding a fixed pin. The mechanism exists only
-/// while the false-move witnesses are red; the finished eval sources drop it.
-fn apply_expect_fail(reason: Option<&str>, verdicts: Vec<Verdict>) -> Vec<Verdict> {
-    let Some(reason) = reason else {
-        return verdicts;
-    };
-    if verdicts.iter().all(|verdict| verdict.passed) {
-        let label = verdicts
-            .first()
-            .map_or_else(|| "expect_fail".to_owned(), |verdict| verdict.label.clone());
-        return vec![Verdict {
-            label,
-            passed: false,
-            detail: format!("unexpectedly passed; remove expect_fail ({reason})"),
-        }];
-    }
-    verdicts
-        .into_iter()
-        .map(|verdict| Verdict {
-            label: verdict.label,
-            passed: true,
-            detail: format!("expected-fail ({reason}): {}", verdict.detail),
-        })
-        .collect()
-}
-
 /// The faces an assertion applies to: its own override, else the block default.
 fn faces_for(own: Option<FaceMode>, block_modes: &[FaceMode]) -> Vec<FaceMode> {
     match own {
         Some(face) => vec![face],
         None => block_modes.to_vec(),
-    }
-}
-
-#[cfg(test)]
-mod expect_fail_tests {
-    use super::apply_expect_fail;
-    use crate::harness::Verdict;
-
-    const REASON: &str = "F1: shape.ts leaves its companion folder";
-
-    fn verdict(label: &str, passed: bool) -> Verdict {
-        Verdict {
-            label: label.to_owned(),
-            passed,
-            detail: format!("observed {label}"),
-        }
-    }
-
-    /// The `(label, passed, detail)` of each verdict, for whole-value asserts.
-    fn shape(verdicts: &[Verdict]) -> Vec<(&str, bool, &str)> {
-        verdicts
-            .iter()
-            .map(|verdict| {
-                (
-                    verdict.label.as_str(),
-                    verdict.passed,
-                    verdict.detail.as_str(),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn should_leave_verdicts_unchanged_without_a_marker() {
-        let verdicts = vec![
-            verdict("pin#anchored", true),
-            verdict("pin#greenfield", false),
-        ];
-
-        let applied = apply_expect_fail(None, verdicts);
-
-        assert_eq!(
-            shape(&applied),
-            vec![
-                ("pin#anchored", true, "observed pin#anchored"),
-                ("pin#greenfield", false, "observed pin#greenfield"),
-            ]
-        );
-    }
-
-    #[test]
-    fn should_pass_every_face_of_a_marked_pin_that_fails_on_any_face() {
-        let verdicts = vec![
-            verdict("pin#anchored", true),
-            verdict("pin#greenfield", false),
-        ];
-
-        let applied = apply_expect_fail(Some(REASON), verdicts);
-
-        assert_eq!(
-            shape(&applied),
-            vec![
-                (
-                    "pin#anchored",
-                    true,
-                    "expected-fail (F1: shape.ts leaves its companion folder): observed pin#anchored"
-                ),
-                (
-                    "pin#greenfield",
-                    true,
-                    "expected-fail (F1: shape.ts leaves its companion folder): observed pin#greenfield"
-                ),
-            ]
-        );
-    }
-
-    #[test]
-    fn should_fail_a_marked_pin_that_passes_on_every_face() {
-        let verdicts = vec![
-            verdict("pin#anchored", true),
-            verdict("pin#greenfield", true),
-        ];
-
-        let applied = apply_expect_fail(Some(REASON), verdicts);
-
-        assert_eq!(
-            shape(&applied),
-            vec![(
-                "pin#anchored",
-                false,
-                "unexpectedly passed; remove expect_fail (F1: shape.ts leaves its companion folder)"
-            )]
-        );
-    }
-
-    #[test]
-    fn should_fall_back_to_a_generic_label_for_a_marked_pin_with_no_verdicts() {
-        let applied = apply_expect_fail(Some(REASON), Vec::new());
-
-        assert_eq!(
-            shape(&applied),
-            vec![(
-                "expect_fail",
-                false,
-                "unexpectedly passed; remove expect_fail (F1: shape.ts leaves its companion folder)"
-            )]
-        );
     }
 }

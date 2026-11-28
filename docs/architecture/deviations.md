@@ -425,3 +425,72 @@
 - **Impact on spec**: none in-stream — no production code, TOML, DTO, golden, or coefficient movement; the witness moves from red-pending-fix to standing-red-by-ruling; the redesign stream inherits the measured chain above plus the preserved veto evidence
 - **Severity**: minor
 - **Resolution (2026-09-25)**: at `c18f840` the witness passes (`cargo nextest run -p unlace-eval`: 36/36 green), so the standing red is retired; the witness now guards against import-cycle tearing regressions and the eval module doc no longer records a waived red
+
+### D-51: ω (`unit-outflow`) has no isolating eval case and tracks ε (`entry-inflow`)
+- **When**: advice-false-moves DRF04–DRF16 (2026-11-25)
+- **Draft said**: ADR-33 prices companion entry inflow (ε) and unit outflow (ω) as two terms, each calibrated on the eval corpus
+- **What I did instead**: calibrated ε only, as five times the smallest value that holds every companion-folder pin at any symbol-gain threshold, and set ω to the same `0.0125`. No eval case exercises a file or declaration leaving a unit without entering its entry file, so a different ω would move no measured result
+- **Reason**: verification (the corpus cannot separate the two terms; inventing a separate number would be a guess presented as a calibration)
+- **Impact on spec**: none (both default to `0.0125`; `0.0` disables either)
+- **Severity**: minor
+- **Resolution**: open until a corpus case isolates unit outflow; the config doc comment and README mark ω uncalibrated
+
+### D-52: Rust paths in macro bodies are read only from expression-list bodies
+- **When**: advice-false-moves DRF10–DRF12, reworked in round 2 (2026-11-26)
+- **Draft said**: ADR-35 takes cycle findings from the file-import facts each adapter states. REV02 D4 asks for import facts derived from macro bodies
+- **What I did instead**:
+  - The Rust adapter re-parses a macro body that is a comma-separated expression list, as `println!`, `format!`, `assert!`, `vec!` and `write!` take, nested ones included. It records each qualified path in it as an import (`println!("{}", crate::a::f())` imports `a.rs`).
+  - It still states nothing for:
+    - a `use` inside a macro;
+    - items a `macro_rules!` produces;
+    - a body that is not an expression list (`my_dsl! { a::f => a::g }`);
+    - proc macros.
+  - These files stay covered: coverage stays `complete` and they are not listed in `files_without_imports`.
+  - Attribute paths, `pub(in ..)` visibility, `Self::` paths and `cfg(test)` code are also left out.
+- **Reason**: wrong-integration (`syn` leaves a macro's token tree unparsed, so only a body that parses as expressions can be read). The loader runs without the proc-macro server, so expanded code is unavailable. Marking every file with an unreadable body as a gap would make almost every crate `partial`
+- **Impact on spec**: behavior-change (a cycle held together only by a path in a DSL or proc-macro body is neither cut nor reported, and coverage does not show it)
+- **Severity**: minor
+
+### D-53: A cycle closed only by type-only or dynamic imports is no longer reported, because cycles are import cycles
+- **When**: advice-false-moves DRF14, reworded in round 2 (2026-11-26)
+- **Draft said**: a cycle finding is a strongly connected component of the hard symbol graph, and unlace 1.0.0 reported one whenever a type reference closed it
+- **What I did instead**: a cycle finding is a cycle of file imports (ADR-35).
+  - A `type`-qualified import (`import type`, `export type`, or a type-only specifier) loads nothing at runtime and states no import, so a cycle whose back edge is type-only is dropped.
+  - A cycle closed only by a dynamic `import()` is dropped too, because a dynamic import is not an import fact.
+  - A plain import whose bindings are used only as types still states an import. It is `deferred`, so a cycle it closes is listed as borderline, not dropped.
+  - Rust parent/child facade `use` cycles are listed as borderline (their imports carry no load order).
+- **Reason**: behavior-change (the 1.0.0 cut named same-file symbol edges that did not remove the cross-file dependency the reader saw)
+- **Impact on spec**: behavior-change (a reader upgrading from 1.0.0 sees such findings disappear; goldens `cyclic`, `cyclic-oversized` and `dupflat` changed text)
+- **Severity**: minor
+
+### D-54: An unavailable cycle status is reported for files without import facts
+- **When**: advice-false-moves DRF14, reworked in round 2 (2026-11-26)
+- **Draft said**: a cycle finding names the imports whose removal breaks it
+- **What I did instead**:
+  - When a cycle runs through a file whose adapter states no imports, the finding reports `importCycle.status = "unavailable"` and names those files instead of a cut, and `current.cycleCoverage` records `partial` or `unavailable` for the run.
+  - The Rust and Python adapters list only the affected files: a Rust file with an unresolved `use` leaf, and a Python importer with an unresolved first-party import, including a name two source roots share. A Python source root is `src/` or any non-package directory that holds a package, so `backend/app/` resolves as `app`. A package reached only through a path the resolver does not treat as a root, such as one added to `sys.path` at run time, still reads as third-party and is neither a fact nor a gap. The rest of the crate or package stays covered.
+  - An unavailable cycle is never reported as empty.
+  - Saved results and IR snapshots before IR schema 4 state no imports, so every file in them reads as unavailable.
+- **Reason**: behavior-change (a silent gap would let "no cycle finding" read as "no cycle")
+- **Impact on spec**: surface-change (additive result fields under schema 12; a coverage note in the `violations` and `report` faces; the exit code is unchanged unless `--fail-on cycle-coverage` is given)
+- **Severity**: minor
+
+### D-55: The deprecated `source-cohesion` alias carries no deprecation warning
+- **When**: advice-false-moves DRF20 (2026-11-25)
+- **Draft said**: the qualification weight `source-cohesion` is renamed `destination-advantage`, and the old key should be flagged as deprecated
+- **What I did instead**: the old key is accepted as a serde alias and renamed on load without any warning. Setting both keys is a configuration error that names the deprecated key. The README and the checked-in `unlace.toml` use the new name
+- **Reason**: behavior-change (the rename shipped with the alias and no warning; a deprecation warning is not built)
+- **Impact on spec**: none (a profile using the old key behaves identically)
+- **Severity**: minor
+
+### D-56: TypeScript load order is read from where a binding is used, with three residuals
+- **When**: advice-false-moves round 2 (2026-11-26)
+- **Draft said**: REV02 D8 marks a TypeScript cycle borderline when no import on it runs at module load
+- **What I did instead**: an import is `eager` when a value binding it introduces is read at load time, after an intra-file closure through local declarations (ADR-35 §2). Three cases are classed by approximation:
+  - **Dynamic dispatch.** A load-time call through dynamic dispatch, such as `registry[key]()` or a method reached through an object, is classed by where each binding is read, not by what the call runs. A function reached only that way counts as deferred.
+  - **Callbacks.** A callback passed to any top-level call counts as load time, including `setTimeout(cb)`, which runs later. This over-reports `eager`.
+  - **Decorators.** Decorators are not parsed, so a file that uses one fails the whole run with a parse error, as in 1.0.0. The collector's decorator handling is kept, dormant, for the follow-up that enables decorator parsing.
+- **Reason**: verification (exact load-time reachability needs call-graph resolution across dynamic dispatch, which the adapter does not have; over-reporting `eager` keeps a possible hazard a violation)
+- **Impact on spec**: behavior-change (a cycle whose only load-time use goes through dynamic dispatch is listed as borderline; a cycle reached only through a deferred top-level callback is a violation)
+- **Severity**: minor
+- **Resolution**: open; decorator parsing is a follow-up

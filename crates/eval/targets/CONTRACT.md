@@ -39,13 +39,16 @@ finding.
 
 Canonical failure modes: `directory-tearing`, `cross-dir-welding`,
 `over-capacity`, `workspace-collapse`, `anchored-inversion`,
-`naming-incoherence`, `import-cycle`, `scale`, `source-test-mixing`. The
+`naming-incoherence`, `import-cycle`, `scale`, `source-test-mixing`,
+`missed-move`. The
 `import-cycle` mode covers fixtures whose designed defect is one genuine priced
 import cycle spanning two real directories — the substrate the FIX07
 seed-granularity probe measures. The `source-test-mixing` mode covers fixtures
 whose designed defect is a production symbol relocated across the source/test
 boundary into (or out of) its spec twins — the symbol-grain gap the file-graph
-test-zone tie-cut cannot reach (FIX11).
+test-zone tie-cut cannot reach (FIX11). The `missed-move` mode covers
+fixtures whose designed defect is a justified move missing from the advice or
+held below the tier it earns: the positive pin beside the false-move targets.
 
 ## The evaluation surface
 
@@ -389,19 +392,6 @@ Per-kind keys (missing-required and unknown alike fail loud):
 | recommended_guard (at most one per block) | — | — |
 
 An assertion's own `mode` overrides `[assert].modes` for that assertion only.
-
-**Temporary: `expect_fail`.** `keep_together`, `separate`, `preserve_dir`,
-`preserve_symbol_home`, `advice_tier` and `recommended_guard` accept an
-optional `expect_fail = "<finding id>: <one-line cause>"` that marks a pin as
-a known-red witness. Markers are set only from an observed run, never
-predicted. The marker covers every verdict the pin produces, across all its
-modes. A marked pin that fails on any mode passes, and each verdict's detail
-reads `expected-fail (<reason>): <observation>`. A marked pin that passes on
-every mode fails once with `unexpectedly passed; remove expect_fail
-(<reason>)`, so a fix must delete the markers of the pins it turns green. An
-empty or blank reason is rejected at load. The key exists only while the
-`companion-folders` witnesses are red. Once the engine fixes land, it and
-every marker are removed.
 
 ### Pair-F1
 
