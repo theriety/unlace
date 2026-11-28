@@ -210,6 +210,7 @@ impl<'a> PipelineSolver<'a> {
             adapter_pairs,
             mirror_enabled: profile.relocation.test_mirroring.enabled,
             pin_test_symbols: profile.relocation.pin_detected_test_symbols,
+            symbol_gain_threshold: profile.relocation.symbol_gain_threshold,
             files: relieved_files,
             index_of,
             condensation,

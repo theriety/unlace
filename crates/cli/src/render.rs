@@ -256,11 +256,12 @@ pub(crate) fn effective_parameter_lines(name: &str, p: &ProfileConfig) -> Vec<St
             weight(p.diversity.min_distance)
         ),
         format!(
-            "   relocation pin-test-symbols {} · cross-package {} · file patterns {} · symbol patterns {}",
+            "   relocation pin-test-symbols {} · cross-package {} · file patterns {} · symbol patterns {} · symbol-gain-threshold {}",
             p.relocation.pin_detected_test_symbols,
             p.relocation.allow_cross_package_moves,
             p.relocation.forbid_file_moves.len(),
-            p.relocation.forbid_symbol_moves.len()
+            p.relocation.forbid_symbol_moves.len(),
+            weight(p.relocation.symbol_gain_threshold)
         ),
         format!(
             "              mirroring enabled {} · builtins {} · rules {}",
@@ -937,6 +938,8 @@ mod tests {
             to_path: "src/task/types.rs".to_owned(),
             delta: -0.002,
             broken_imports: 4,
+            terms: None,
+            fold: None,
         };
 
         assert!(symbol_move_line(&make(SymbolKind::Type)).starts_with(" - move type `WorkInput`"));
@@ -1266,6 +1269,8 @@ mod tests {
                 to_path: "src/b.ts".to_owned(),
                 delta: -0.1,
                 broken_imports: 0,
+                terms: None,
+                fold: None,
             }];
         }
 
@@ -1486,6 +1491,8 @@ mod tests {
             to_path: destination.clone(),
             delta: -0.1,
             broken_imports: 0,
+            terms: None,
+            fold: None,
         }];
 
         let terminal = terminal(&result, &result.current.tree.name)?;
@@ -1584,6 +1591,8 @@ mod tests {
             to_path: destination.clone(),
             delta: -0.1,
             broken_imports: 0,
+            terms: None,
+            fold: None,
         }];
 
         let terminal = terminal(&result, &result.current.tree.name)?;
@@ -1708,6 +1717,8 @@ mod tests {
             to_path: "shared/owner.ts".to_owned(),
             delta: -0.1,
             broken_imports: 1,
+            terms: None,
+            fold: None,
         };
         let candidate = result
             .profiles
@@ -2055,6 +2066,8 @@ mod tests {
                 to_path: "src/task/types.rs".to_owned(),
                 delta: 0.0,
                 broken_imports: 1,
+                terms: None,
+                fold: None,
             }],
             capacity_remainder: None,
         };
@@ -2243,6 +2256,8 @@ mod tests {
                 to_path: "shared/owner.ts".to_owned(),
                 delta: -0.1,
                 broken_imports: 1,
+                terms: None,
+                fold: None,
             };
             unlace_engine::RelocationAdvice {
                 proposal: unlace_engine::RelocationProposal::Symbol { relocation },
@@ -2285,6 +2300,8 @@ mod tests {
                     to_path: "src/a.ts".to_owned(),
                     delta: -0.1,
                     broken_imports: 1,
+                    terms: None,
+                    fold: None,
                 },
             },
             destination: "src/a.ts".to_owned(),
@@ -2527,6 +2544,8 @@ mod tests {
                 to_path: "shared/owner.ts".to_owned(),
                 delta: -0.1,
                 broken_imports: 1,
+                terms: None,
+                fold: None,
             })
             .collect();
 
@@ -2662,6 +2681,8 @@ mod tests {
             to_path: "shared/owner.ts".to_owned(),
             delta: -0.1,
             broken_imports: 1,
+            terms: None,
+            fold: None,
         }
     }
 

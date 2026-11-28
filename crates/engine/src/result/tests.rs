@@ -7,7 +7,7 @@ use unlace_ir::ScopeLevel;
 use super::*;
 
 #[test]
-fn should_serialize_schema_version_eleven_with_two_advice_groups() {
+fn should_serialize_schema_version_twelve_with_two_advice_groups() {
     let result = AnalyzeResult {
         schema_version: RESULT_SCHEMA_VERSION,
         snapshot_hash: "snapshot".to_owned(),
@@ -37,7 +37,7 @@ fn should_serialize_schema_version_eleven_with_two_advice_groups() {
     assert_eq!(
         json.pointer("/schemaVersion")
             .and_then(serde_json::Value::as_u64),
-        Some(11)
+        Some(12)
     );
     assert!(json.get("profiles").is_some());
     assert!(json.get("modes").is_none());
@@ -298,4 +298,103 @@ fn should_display_every_reason_as_its_prose() {
     for (reason, prose) in cases {
         assert_eq!(reason.to_string(), prose);
     }
+}
+
+/// A breakdown whose terms are `1..=10` scaled by `scale`.
+fn ascending_breakdown(scale: f64) -> ScoreBreakdown {
+    ScoreBreakdown {
+        cut: scale,
+        imbalance: 2.0 * scale,
+        naming: 3.0 * scale,
+        path: 4.0 * scale,
+        anchor: 5.0 * scale,
+        capacity: 6.0 * scale,
+        dependency_only: 7.0 * scale,
+        companion_separation: 8.0 * scale,
+        entry_inflow: 9.0 * scale,
+        unit_outflow: 10.0 * scale,
+    }
+}
+
+fn attributed_move() -> SymbolMove {
+    SymbolMove {
+        symbol: "charge".to_owned(),
+        kind: SymbolKind::Symbol,
+        from_path: "src/a.py".to_owned(),
+        to_path: "src/b.py".to_owned(),
+        delta: -0.55,
+        broken_imports: 1,
+        terms: Some(TermShift {
+            before: ascending_breakdown(0.02),
+            after: ascending_breakdown(0.01),
+        }),
+        fold: Some("src/c.py".to_owned()),
+        display: None,
+    }
+}
+
+#[test]
+fn should_take_each_term_delta_as_after_minus_before() {
+    let shift = TermShift {
+        before: ascending_breakdown(0.02),
+        after: ascending_breakdown(0.01),
+    };
+
+    let deltas = shift.deltas();
+
+    assert_eq!(deltas, ascending_breakdown(-0.01));
+}
+
+#[test]
+fn should_round_trip_a_schema_twelve_symbol_move_with_its_terms() {
+    let relocation = attributed_move();
+
+    let json = serde_json::to_value(&relocation).unwrap_or_default();
+    let back: Option<SymbolMove> = serde_json::from_value(json.clone()).ok();
+
+    assert_eq!(
+        json.pointer("/terms/before/entryInflow")
+            .and_then(serde_json::Value::as_f64),
+        Some(0.18)
+    );
+    assert!(json.pointer("/terms/after/unitOutflow").is_some());
+    assert_eq!(
+        json.pointer("/fold").and_then(serde_json::Value::as_str),
+        Some("src/c.py")
+    );
+    assert_eq!(back, Some(relocation));
+}
+
+#[test]
+fn should_load_a_schema_eleven_symbol_move_without_terms() {
+    let saved = serde_json::json!({
+        "symbol": "charge",
+        "kind": "symbol",
+        "fromPath": "src/a.py",
+        "toPath": "src/b.py",
+        "delta": -0.5,
+        "brokenImports": 1
+    });
+
+    let loaded: Option<SymbolMove> = serde_json::from_value(saved).ok();
+    let reserialized = loaded
+        .as_ref()
+        .and_then(|relocation| serde_json::to_value(relocation).ok());
+
+    assert_eq!(
+        loaded
+            .as_ref()
+            .map(|relocation| (relocation.terms, relocation.fold.clone())),
+        Some((None, None))
+    );
+    assert!(
+        reserialized.is_some_and(|json| json.get("terms").is_none()),
+        "an unattributed move writes no terms field"
+    );
+}
+
+#[test]
+fn should_accept_schema_eleven_as_the_oldest_readable_result() {
+    assert_eq!(MIN_RESULT_SCHEMA_VERSION, 11);
+    assert_eq!(RESULT_SCHEMA_VERSION, 12);
 }

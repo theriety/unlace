@@ -65,6 +65,8 @@ fn relocation() -> SymbolMove {
         to_path: "shared/owner.ts".to_owned(),
         delta: -0.1,
         broken_imports: 1,
+        terms: None,
+        fold: None,
     }
 }
 

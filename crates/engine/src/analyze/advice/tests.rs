@@ -124,6 +124,8 @@ pub(super) fn symbol_advice(symbol: &str, from_path: &str, to_path: &str) -> Adv
                 to_path: to_path.to_owned(),
                 delta: -0.1,
                 broken_imports: 0,
+                terms: None,
+                fold: None,
             },
         },
         subject: format!("symbol:{from_path}:{symbol}"),
@@ -500,6 +502,8 @@ fn should_keep_same_named_type_and_runtime_relocations_as_distinct_advice() {
         to_path: to_path.to_owned(),
         delta: -0.1,
         broken_imports: 1,
+        terms: None,
+        fold: None,
     };
     let (Some(anchored), Some(initial_greenfield)) =
         (profiles.anchored.as_mut(), profiles.greenfield.as_mut())

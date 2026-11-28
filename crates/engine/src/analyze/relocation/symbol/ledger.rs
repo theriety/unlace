@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use unlace_core::score::ScoreBreakdown;
 use unlace_ir::{ContainerId, Node, Polarity};
 
 use crate::analyze::relocation::symbol::inputs::PassInputs;
@@ -31,14 +32,16 @@ pub(super) struct Ledger<'a> {
     pub(super) moved: BTreeSet<u32>,
     /// Effective placement overrides accepted so far.
     pub(super) overlay: BTreeMap<u32, ContainerId>,
-    /// Running best objective value; acceptance must beat it by more than
+    /// Running best objective breakdown; acceptance must beat its `total` by
+    /// more than
     /// [`SYMBOL_MIN_IMPROVEMENT`](crate::analyze::relocation::SYMBOL_MIN_IMPROVEMENT).
-    pub(super) best: f64,
+    pub(super) best: ScoreBreakdown,
     pub(super) relocations: Vec<SymbolRelocation>,
 }
 
 impl<'a> Ledger<'a> {
-    pub(super) fn new(inputs: PassInputs<'a>) -> Self {
+    /// Opens the ledger on the assembly, with `start` as the running best.
+    pub(super) fn new(inputs: PassInputs<'a>, start: ScoreBreakdown) -> Self {
         let PassInputs {
             assembled, nodes, ..
         } = inputs;
@@ -63,7 +66,7 @@ impl<'a> Ledger<'a> {
             native,
             moved: BTreeSet::new(),
             overlay: BTreeMap::new(),
-            best: 0.0,
+            best: start,
             relocations: Vec::new(),
         }
     }
@@ -78,15 +81,15 @@ impl<'a> Ledger<'a> {
 
     /// Books one accepted relocation: moves the symbol's production SLOC and
     /// resident count from `source` to `destination`, marks the symbol moved
-    /// and records it. A departure lowers the origin's native count; the
-    /// arrival deliberately does not raise the destination's (FIX12-A). `fold`
-    /// is the pass-start id of the collision-folded file, if any.
+    /// and records it with the breakdowns either side of its acceptance. A
+    /// departure lowers the origin's native count; the arrival deliberately
+    /// does not raise the destination's (FIX12-A). `fold` is the pass-start id
+    /// of the collision-folded file, if any.
     pub(super) fn record_relocation(
         &mut self,
         node: &Node,
-        source: ContainerId,
-        destination: ContainerId,
-        delta: f64,
+        (source, destination): (ContainerId, ContainerId),
+        (before, after): (ScoreBreakdown, ScoreBreakdown),
         fold: Option<ContainerId>,
     ) {
         if node.polarity == Polarity::Production {
@@ -110,7 +113,9 @@ impl<'a> Ledger<'a> {
             node: node.id.0,
             from_file: source,
             to_file: destination,
-            delta,
+            delta: before.total - after.total,
+            before,
+            after,
             fold,
         });
     }
@@ -146,7 +151,19 @@ mod tests {
             native: BTreeMap::new(),
             moved: BTreeSet::new(),
             overlay: BTreeMap::from([(0, ContainerId(5))]),
-            best: 0.0,
+            best: unlace_core::score::ScoreBreakdown {
+                cut: 0.0,
+                imbalance: 0.0,
+                naming: 0.0,
+                path: 0.0,
+                anchor: 0.0,
+                capacity: 0.0,
+                dependency_only: 0.0,
+                companion_separation: 0.0,
+                entry_inflow: 0.0,
+                unit_outflow: 0.0,
+                total: 0.0,
+            },
             relocations: Vec::new(),
         };
 

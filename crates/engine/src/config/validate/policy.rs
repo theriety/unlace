@@ -84,6 +84,11 @@ impl AnalyzeConfig {
             }
         }
 
+        non_negative_finite(
+            &format!("{prefix}.relocation.symbol-gain-threshold"),
+            relocation.symbol_gain_threshold,
+        )?;
+
         let mirror_prefix = format!("{prefix}.relocation.test-mirroring.rules");
         let mut parsed_sources: Vec<MirrorTemplate> = Vec::new();
         for (rule_index, rule) in relocation.test_mirroring.rules.iter().enumerate() {

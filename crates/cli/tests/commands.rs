@@ -526,7 +526,8 @@ fn should_refuse_a_saved_result_that_is_not_a_current_analysis() -> Result<(), S
     ])?;
     let hollow = format!("{{\"schemaVersion\": {RESULT_SCHEMA_VERSION}}}");
     repo.write("hollow.json", &hollow)?;
-    let future = format!("unsupported result schemaVersion 999; expected {RESULT_SCHEMA_VERSION}");
+    let future =
+        format!("unsupported result schemaVersion 999; expected 11 to {RESULT_SCHEMA_VERSION}");
 
     for (name, reason) in [
         ("absent.json", "No such file or directory"),

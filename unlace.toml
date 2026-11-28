@@ -115,6 +115,8 @@ pin-detected-test-symbols = true
 allow-cross-package-moves = false
 forbid-file-moves = []
 forbid-symbol-moves = []
+# Share of |score| a symbol move must gain to be accepted (ADR-34).
+symbol-gain-threshold = 0.001
 
 [profiles.anchored.relocation.test-mirroring]
 enabled = true
@@ -182,6 +184,8 @@ pin-detected-test-symbols = true
 allow-cross-package-moves = false
 forbid-file-moves = []
 forbid-symbol-moves = []
+# Share of |score| a symbol move must gain to be accepted (ADR-34).
+symbol-gain-threshold = 0.001
 
 [profiles.greenfield.relocation.test-mirroring]
 enabled = true

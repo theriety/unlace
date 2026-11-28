@@ -458,6 +458,8 @@ mod tests {
                     to_path: MATCHER.to_owned(),
                     delta: -1.0,
                     broken_imports: 0,
+                    terms: None,
+                    fold: None,
                     display: None,
                 },
             },

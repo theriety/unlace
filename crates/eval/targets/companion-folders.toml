@@ -113,7 +113,6 @@ because = "symmetric to buildAnnotation: an export of annotation.ts built on its
 symbol = "hasMetadata"
 path = "src/stringifier/metadata.ts"
 because = "hasMetadata serves four stringifier files (inline x3, block x2, document x2, inline/reference x1); its shared home beats any single consumer, least of all one the majority consumers are vetoed from (F8)"
-expect_fail = "F8: hasMetadata moves to src/stringifier/document.ts in greenfield"
 
 [[assert.preserve_symbol_home]]
 symbol = "appendToken"
@@ -180,7 +179,6 @@ symbol = "hasMetadata"
 path = "src/stringifier/metadata.ts"
 max_tier = "absent"
 because = "F8: hasMetadata serves four stringifier files; its shared metadata.ts home beats any single consumer, so no move out of it is a recommendation (SC-3)"
-expect_fail = "F8: the hasMetadata move is a Review candidate"
 
 [[assert.advice_tier]]
 symbol = "appendToken"
