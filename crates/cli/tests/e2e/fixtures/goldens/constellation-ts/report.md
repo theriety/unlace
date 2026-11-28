@@ -1,7 +1,7 @@
 # Unlace report — constellation-ts
 
 28 files · 28 symbols · 48 edges
-Snapshot `51384d72e5670fb2de7dbd113d82a696484752963563bd45dbcd127f37a7962c`
+Snapshot `d1d38ab5afd2a4a60af1a04839a0773862cec114c84b769cf98c5b0aef57ce4c`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 ## Structural findings

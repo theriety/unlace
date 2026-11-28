@@ -1,7 +1,7 @@
 # Unlace report — cyclic-oversized
 
 3 files · 3 symbols · 3 edges
-Snapshot `43e4289818d5886deb7747d5209927eaa9f3ae57c23705cdbf15b3dfd03d1336`
+Snapshot `fae78f3477658b94f34bcc2f4caf3fa1c4a3e3755a87101edb21e808b25a688c`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 ## Structural findings

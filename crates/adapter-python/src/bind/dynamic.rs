@@ -42,28 +42,32 @@ pub(super) fn emit_dynamic(
             }
             DynamicRef::ImportModule(dotted) => {
                 for target in import_module_targets(dotted, resolver, exports) {
-                    push_edge(
-                        edges,
-                        source,
-                        target,
-                        EdgeKind::ValueImport,
-                        Hardness::Hard,
-                        CONFIDENCE_DYNAMIC,
-                    );
+                    push_fan_out_edge(edges, source, target);
                 }
             }
         }
     }
     for &target in star_targets {
-        push_edge(
-            edges,
-            source,
-            target,
-            EdgeKind::ValueImport,
-            Hardness::Hard,
-            CONFIDENCE_DYNAMIC,
-        );
+        push_fan_out_edge(edges, source, target);
     }
+}
+
+/// Appends one edge of a whole-module load's fan-out (`importlib.import_module`
+/// or a star import), marked [`Edge::fan_out`]: it shows the module is loaded,
+/// not which name the importer uses. A `getattr` names a known binding, so it
+/// goes through [`push_edge`] unmarked. Self-loops are skipped as there.
+fn push_fan_out_edge(edges: &mut Vec<Edge>, source: NodeId, target: NodeId) {
+    if source == target {
+        return;
+    }
+    edges.push(Edge {
+        source,
+        target,
+        kind: EdgeKind::ValueImport,
+        hardness: Hardness::Hard,
+        confidence: CONFIDENCE_DYNAMIC,
+        fan_out: true,
+    });
 }
 
 /// Resolves a string-literal `importlib.import_module` target to its public

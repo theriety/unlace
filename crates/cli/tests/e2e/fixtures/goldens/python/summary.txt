@@ -1,6 +1,6 @@
 Unlace report — python
 2 files · 4 symbols · 4 edges
-Snapshot `1f485dce198da030b7730699e48f21b2232067474e9b048dade10f1b3f4038a2`
+Snapshot `5fff51f7d0bcf9830711ab160ebd5823784c3c65289357049be8f90a8e263969`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 Structural findings

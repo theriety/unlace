@@ -231,6 +231,37 @@ fn should_skip_an_unresolved_dynamic_import_and_still_link_the_next_one() -> Res
 }
 
 #[test]
+fn should_mark_dynamic_import_edges_fan_out_and_static_import_edges_not() -> Result<(), String> {
+    let fragment = bind_files(&[
+        (
+            "src/loader.ts",
+            "import { fixed } from './fixed';\nexport async function load(): Promise<void> { fixed(); await import('./lazy'); }\n",
+        ),
+        ("src/fixed.ts", "export function fixed(): void {}\n"),
+        (
+            "src/lazy.ts",
+            "export function first(): void {}\nexport function second(): void {}\n",
+        ),
+    ])?;
+    let load = node_id(&fragment, "load")?;
+    let fixed = node_id(&fragment, "fixed")?;
+    let first = node_id(&fragment, "first")?;
+    let second = node_id(&fragment, "second")?;
+    let mut marked: Vec<(NodeId, bool)> = fragment
+        .edges
+        .iter()
+        .filter(|edge| edge.source == load)
+        .map(|edge| (edge.target, edge.fan_out))
+        .collect();
+    marked.sort_unstable();
+    let mut expected = vec![(fixed, false), (first, true), (second, true)];
+    expected.sort_unstable();
+
+    assert_eq!(marked, expected);
+    Ok(())
+}
+
+#[test]
 fn should_exempt_a_namespace_import_after_an_unresolved_one() -> Result<(), String> {
     let fragment = bind_files(&[
         (
@@ -269,6 +300,20 @@ fn should_hang_a_root_level_file_under_the_workspace_bucket() -> Result<(), Stri
     assert_eq!(
         chain,
         ["main.ts", "workspace", "workspace", "workspace", "root"]
+    );
+    Ok(())
+}
+
+#[test]
+fn should_skip_the_self_loop_of_a_dynamic_import_of_its_own_module() -> Result<(), String> {
+    let fragment = bind_files(&[(
+        "src/loader.ts",
+        "export async function load(): Promise<void> { await import('./loader'); }\nexport function other(): void {}\n",
+    )])?;
+
+    assert_eq!(
+        edges_from(&fragment, "load")?,
+        [(SmolStr::new("other"), EdgeKind::ValueImport, Hardness::Hard)]
     );
     Ok(())
 }

@@ -76,3 +76,26 @@ fn should_record_main_and_setup_as_entries_but_not_conftest() {
 fn should_not_treat_a_nested_setup_as_an_entry() {
     assert_eq!(facts(&["docs/setup.py"]), Vec::<FileFact>::new());
 }
+
+#[test]
+fn should_state_a_package_initializer_as_the_entry_of_its_folder() {
+    assert_eq!(
+        facts(&[
+            "pkg/__init__.py",
+            "pkg/sub/__init__.py",
+            "pkg/sub/mod.py",
+            "src/lib/__init__.py",
+            "src/lib/__init__.pyi",
+        ]),
+        vec![
+            FileFact::entry_of_folder("pkg/__init__.py", "pkg"),
+            FileFact::entry_of_folder("pkg/sub/__init__.py", "pkg/sub"),
+            FileFact::entry_of_folder("src/lib/__init__.py", "src/lib"),
+        ]
+    );
+}
+
+#[test]
+fn should_state_no_entry_folder_for_a_root_package_initializer() {
+    assert_eq!(facts(&["__init__.py", "mod.py"]), Vec::<FileFact>::new());
+}

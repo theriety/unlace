@@ -1,7 +1,7 @@
 # Unlace report — dupflat
 
 7 files · 6 symbols · 4 edges
-Snapshot `a63c71881d0c939b13e48dff1fd653bcbcba362951f3277051fb59cff6966ef3`
+Snapshot `5975c3a159a59ce37697a46903fed2ca11e7f801a14370b9d3d3fecb8fc6f04d`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 ## Structural findings

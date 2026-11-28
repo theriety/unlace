@@ -1,7 +1,7 @@
 # Unlace report — nested-python
 
 6 files · 12 symbols · 15 edges
-Snapshot `f1e4120dda20a0bdba92874907b5be51fc8338b1a403209703828abedc6686ce`
+Snapshot `cd78b62abba377137aa76c67f9445d270d5d18ae21abc4b04fa515d1a810e84a`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 ## Structural findings

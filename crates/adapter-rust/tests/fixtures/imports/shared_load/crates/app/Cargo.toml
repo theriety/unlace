@@ -1,0 +1,5 @@
+[package]
+name = "shared-app"
+version = "0.0.0"
+# 2015: an absolute `::a::b` path starts at the crate root
+edition = "2015"

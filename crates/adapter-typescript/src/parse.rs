@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::SmolStr;
 use swc_common::{FileName, SourceMap, Spanned, sync::Lrc};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
-use unlace_ir::{AdapterError, SourceFile};
+use unlace_ir::{AdapterError, ImportKind, LoadOrder, SourceFile};
 
 mod declarations;
 mod references;
@@ -51,6 +51,33 @@ pub enum DeclarationKind {
     Type,
     /// Executable file-scope content without an independent declaration.
     FileBody,
+}
+
+/// A top-level statement that loads another module when the file runs.
+///
+/// Type-only statements are erased at runtime and never become a load. A
+/// dynamic `import()` is never one either: it loads lazily, so it cannot take
+/// part in a load-time cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleLoad {
+    /// The module specifier exactly as written in the statement.
+    pub source: SmolStr,
+    /// Whether the statement binds names of the module or only runs it.
+    pub kind: ImportKind,
+    /// The 1-based line the statement starts on.
+    pub line: u32,
+    /// The runtime names the statement binds in the importing module: each
+    /// value specifier's local, the default or namespace local, or the alias
+    /// of `import x = require(...)`. A re-export or side-effect import binds
+    /// none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<SmolStr>,
+    /// Whether the importer needs the module to have run before its own top
+    /// level finishes: a side-effect import and `import x = require(...)`
+    /// always do, an import does when the module reads one of its names while
+    /// it loads, and a re-export never does.
+    #[serde(default, skip_serializing_if = "LoadOrder::is_eager")]
+    pub load_order: LoadOrder,
 }
 
 /// A static import (`import { x } from '...'`) with literal specifier.
@@ -188,6 +215,10 @@ pub struct ParsedModule {
     /// Only the public API pass reads them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub export_loads: Vec<ExportLoad>,
+    /// Runtime module loads of the top-level import and re-export statements,
+    /// in source order. They feed the file-import facts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_loads: Vec<ModuleLoad>,
 }
 
 /// A module an export loads and hands out.
@@ -238,6 +269,8 @@ fn parse_one(file: &SourceFile) -> Result<ParsedModule, AdapterError> {
     let tsx = file.path.ends_with(".tsx");
     let lexer = Lexer::new(
         Syntax::Typescript(TsSyntax {
+            // decorators stay disabled, so a decorated file fails to parse
+            // and never reaches load-order classification
             tsx,
             ..TsSyntax::default()
         }),
