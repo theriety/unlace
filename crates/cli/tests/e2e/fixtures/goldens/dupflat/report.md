@@ -26,8 +26,8 @@ greenfield profile-specific findings (0)
 ## Candidate layouts
 
 ```text
-anchored — 0 candidates (baseline 0.1562; search converged; current layout already optimal)
-greenfield — 0 candidates (baseline 0.3563; search converged; current layout already optimal)
+anchored — 0 candidates (baseline 0.0562; search converged; current layout already optimal)
+greenfield — 0 candidates (baseline 0.2562; search converged; current layout already optimal)
 ```
 
 ## Advice

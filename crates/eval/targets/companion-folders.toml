@@ -75,12 +75,10 @@ because = "tree/validation/ is the companion folder of tree/validation.ts and su
 [[assert.keep_together]]
 paths = ["src/lexer/block/mdcx-body.ts", "src/lexer/block/mdcx.ts"]
 because = "lexer/block/ is the companion folder of lexer/block.ts; mdcx-body.ts's only importer is its sibling mdcx.ts, so it stays beside it (F2)"
-expect_fail = "F2: mdcx-body.ts and its sole importer mdcx.ts share no folder in either mode"
 
 [[assert.preserve_dir]]
 path = "lexer/block"
 because = "lexer/block/ is the companion folder of lexer/block.ts and survives whole: no member leaves it and the folder neither moves nor dissolves (F2)"
-expect_fail = "F2: no node holds lexer/block/ whole in either mode"
 
 # --- F3–F7: an entry point stays with the private helpers it calls (SC-2) ----
 
@@ -88,13 +86,11 @@ expect_fail = "F2: no node holds lexer/block/ whole in either mode"
 symbol = "inferMatches"
 path = "src/differ/inference.ts"
 because = "inferMatches is inference.ts's only exported function and calls that file's private helpers; moving it to matcher.ts separates the entry point from its implementation (F3)"
-expect_fail = "F3: inferMatches moves to src/differ/matcher.ts in both modes"
 
 [[assert.preserve_symbol_home]]
 symbol = "readMdcxBlock"
 path = "src/lexer/block/mdcx.ts"
 because = "readMdcxBlock is mdcx.ts's entry point over its private readers, like its peers in block/*; hoisting it into block.ts strands those helpers (F4)"
-expect_fail = "F4: readMdcxBlock moves to src/lexer/block.ts in greenfield"
 
 [[assert.preserve_symbol_home]]
 symbol = "buildAnnotation"
@@ -105,13 +101,11 @@ because = "one of annotation.ts's three exports, each calling that file's privat
 symbol = "readInlineSelector"
 path = "src/parser/inline/annotation.ts"
 because = "symmetric to buildAnnotation: an export of annotation.ts built on its private helpers stays with them (F6)"
-expect_fail = "F6: readInlineSelector moves to src/parser/inline.ts in both modes"
 
 [[assert.preserve_symbol_home]]
 symbol = "readInlineSuffix"
 path = "src/parser/inline/annotation.ts"
 because = "symmetric to buildAnnotation: an export of annotation.ts built on its private helpers stays with them (F7)"
-expect_fail = "F7: readInlineSuffix moves to src/parser/inline.ts in both modes"
 
 # --- F8, F9: a shared symbol does not move into a minority consumer (SC-3) ---
 
@@ -125,7 +119,6 @@ expect_fail = "F8: hasMetadata moves to src/stringifier/document.ts in greenfiel
 symbol = "appendToken"
 path = "src/syntax/inline/tokens.ts"
 because = "appendToken is called by InlineScanner (3 sites) and BracketResolver (1 site); moving it into the minority caller brackets.ts on a file-id tie is not a better home than the shared tokens module (F9)"
-expect_fail = "F9: appendToken moves to src/syntax/inline/brackets.ts in greenfield"
 
 # --- SC-5: no falsified move reaches the Recommended tier --------------------
 
@@ -151,21 +144,18 @@ because = "F1, the one move 1.0.0 recommended (both profiles qualified it, into 
 path = "src/lexer/block/mdcx-body.ts"
 max_tier = "absent"
 because = "F2: mdcx-body.ts's only importer is its sibling mdcx.ts inside the companion folder lexer/block/, so no move out of that folder is a recommendation; the pull toward lexer/types.ts that drew 1.0.0's lexer/ move is a type-only import every block/* sibling shares (SC-1)"
-expect_fail = "F2: the mdcx-body.ts move is a Review candidate"
 
 [[assert.advice_tier]]
 symbol = "inferMatches"
 path = "src/differ/inference.ts"
 max_tier = "absent"
 because = "F3: inferMatches is inference.ts's only exported function and calls its private helpers; moving it anywhere separates the entry point from its implementation (SC-2)"
-expect_fail = "F3: the inferMatches move is a Review candidate"
 
 [[assert.advice_tier]]
 symbol = "readMdcxBlock"
 path = "src/lexer/block/mdcx.ts"
 max_tier = "absent"
 because = "F4: readMdcxBlock is mdcx.ts's entry point over its private readers, like its block/* peers; moving it anywhere strands those helpers (SC-2)"
-expect_fail = "F4: the readMdcxBlock move is a Review candidate"
 
 [[assert.advice_tier]]
 symbol = "buildAnnotation"
@@ -178,14 +168,12 @@ symbol = "readInlineSelector"
 path = "src/parser/inline/annotation.ts"
 max_tier = "absent"
 because = "F6: an export of annotation.ts built on its private helpers; moving it anywhere splits the file's implementation (SC-2)"
-expect_fail = "F6: the readInlineSelector move is a Review candidate"
 
 [[assert.advice_tier]]
 symbol = "readInlineSuffix"
 path = "src/parser/inline/annotation.ts"
 max_tier = "absent"
 because = "F7: an export of annotation.ts built on its private helpers; moving it anywhere splits the file's implementation (SC-2)"
-expect_fail = "F7: the readInlineSuffix move is a Review candidate"
 
 [[assert.advice_tier]]
 symbol = "hasMetadata"
@@ -199,4 +187,3 @@ symbol = "appendToken"
 path = "src/syntax/inline/tokens.ts"
 max_tier = "absent"
 because = "F9: appendToken is called from scanner.ts (3 sites) and brackets.ts (1 site); 1.0.0 advised the minority caller brackets.ts, and the findings record scanner.ts only as the report's own better alternative, not as a verified home, so no move out of the shared tokens module has earned Recommended (SC-3)"
-expect_fail = "F9: the appendToken move is a Review candidate"

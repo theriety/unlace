@@ -64,6 +64,8 @@ fn candidate() -> Candidate {
             capacity: 0.0,
             dependency_only: 0.0,
             companion_separation: 0.0,
+            entry_inflow: 0.0,
+            unit_outflow: 0.0,
         },
         improvement: 0.0,
         tree: ContainerNode {

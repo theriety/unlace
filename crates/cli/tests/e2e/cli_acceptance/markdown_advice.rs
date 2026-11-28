@@ -357,7 +357,7 @@ fn should_explain_advice_in_the_public_summary() -> Result<(), String> {
         .collect::<Vec<_>>()
         .join(" ");
     for expected in [
-        "Review candidate (1)",
+        "Review candidate (2)",
         "owner means unique ownership",
         "Profiles share analysis-start evidence",
         "selected by only some executed profiles",
@@ -442,7 +442,7 @@ fn should_roundtrip_finite_analyzed_advice_through_saved_report() -> Result<(), 
     let restored: AnalyzeResult =
         serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
     let markdown = report_with_detail(&restored, true)?;
-    assert!(markdown.contains("Review candidate (1)") && markdown.contains("weighted 0.70/0.60"));
+    assert!(markdown.contains("Review candidate (2)") && markdown.contains("weighted 0.70/0.60"));
     Ok(())
 }
 

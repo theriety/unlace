@@ -40,21 +40,23 @@ candidate is a proposed layout; inclusion does not make a move Recommended. Part
 rescored.
 
 anchored — 0 candidate(s)
-Baseline score: 0.5502
+Baseline score: 0.4014
 Fewer than the requested candidates survived; the solution space converged.
 Current layout is already optimal under this profile's search.
 No candidates were produced.
 
 greenfield — 1 candidate(s)
-Baseline score: 0.7502
+Baseline score: 0.6014
 Fewer than the requested candidates survived; the solution space converged.
 
 greenfield — candidate 1
-  Score: 0.7502 → 0.6111; improvement +0.1390
+  Score: 0.6014 → 0.3622; improvement +0.2392
   Proposed moves
     - Move file `crates/core/src/beta/scale.rs` → `crates/core/src/alpha/scale.rs`
       Why: pulled toward `crates/core/src/alpha/parse.rs` — weight 5.0.
+    - Move symbol `parse` from `crates/core/src/alpha/parse.rs` → `crates/core/src/alpha/score.rs`
     - Move symbol `unit` from `crates/core/src/beta/scale.rs` → `crates/core/src/alpha/parse.rs`
+    - Move symbol `scale` from `crates/core/src/beta/scale.rs` → `crates/core/src/alpha/parse.rs`
   Folder impacts
     `crates/core/src/alpha`: 0 file(s) leaving · 1 entering
     `crates/core/src/beta`: 1 file(s) leaving · 0 entering
@@ -64,9 +66,12 @@ greenfield — candidate 1
         └── core/
             └── src/
                 ├── alpha/
-                │   └── parse.rs *
+                │   ├── parse.rs *
+                │   │   └── symbol `parse` [to crates/core/src/alpha/score.rs]
+                │   └── score.rs *
                 └── beta/
                     └── scale.rs *
+                        ├── symbol `scale` [to crates/core/src/alpha/parse.rs]
                         └── symbol `unit` [to crates/core/src/alpha/parse.rs]
   After
     workspace-move-rust/
@@ -75,8 +80,11 @@ greenfield — candidate 1
             └── src/
                 └── alpha/
                     ├── parse.rs *
+                    │   ├── symbol `scale` [from crates/core/src/beta/scale.rs]
                     │   └── symbol `unit` [from crates/core/src/beta/scale.rs]
-                    └── scale.rs *
+                    ├── scale.rs *
+                    └── score.rs *
+                        └── symbol `parse` [from crates/core/src/alpha/parse.rs]
   * File moved or its symbol contents changed.
   Unchanged branches and symbols omitted; excluded files are not shown.
 ```
@@ -89,13 +97,20 @@ thresholds; absent profiles did not select the move; conflicts name alternative 
 Advice consolidates the best candidate from each executed profile.
  Profiles share analysis-start evidence but apply their own weights and thresholds.
  Recommended (0):
- Review candidate (2):
+ Review candidate (4):
    - file `crates/core/src/beta/scale.rs` → `crates/core/src/alpha` · supporting [greenfield] ·
    qualified [greenfield] · absent [anchored] · conflicts []
      review reasons: selected by only some executed profiles, no strict majority of executed
      profiles provides qualifying support for this destination
-   - symbol `unit` from `crates/core/src/beta/scale.rs` → `crates/core/src/alpha/parse.rs` ·
+   - symbol `parse` from `crates/core/src/alpha/parse.rs` → `crates/core/src/alpha/score.rs` ·
    supporting [greenfield] · qualified [] · absent [anchored] · conflicts []
+     review reasons: selected by only some executed profiles, destination evidence is below the
+     configured minimum, structural evidence is insufficient, the destination is not sufficiently
+     stronger than the best alternative, no strict majority of executed profiles provides
+     qualifying support for this destination
+   - 2 symbols `scale`, `unit` from `crates/core/src/beta/scale.rs` →
+   `crates/core/src/alpha/parse.rs` · supporting [greenfield] · qualified [] · absent [anchored] ·
+   conflicts []
      review reasons: selected by only some executed profiles, destination evidence is below the
      configured minimum, the destination is not sufficiently stronger than the best alternative,
      no strict majority of executed profiles provides qualifying support for this destination

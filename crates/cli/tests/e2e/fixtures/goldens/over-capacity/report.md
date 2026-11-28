@@ -22,8 +22,8 @@ greenfield profile-specific findings (0)
 ## Candidate layouts
 
 ```text
-anchored — 0 candidates (baseline 1.4095; search converged; current layout breaks 2 cap(s))
-greenfield — 0 candidates (baseline 1.6095; search converged; current layout breaks 2 cap(s))
+anchored — 0 candidates (baseline 1.4047; search converged; current layout breaks 2 cap(s))
+greenfield — 0 candidates (baseline 1.6047; search converged; current layout breaks 2 cap(s))
 ```
 
 ## Advice
