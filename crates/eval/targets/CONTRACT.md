@@ -184,7 +184,9 @@ candidate = 1                        # 1 = best alternative, or current when non
 # package P, let D(P, path) be the fixture files whose repo-relative path
 # lies under `<P.root>/[<source-root>/]<path>/`. For every P where
 # D(P, path) is non-empty, some non-file node at level folder or domain,
-# named exactly `path`, whose position within P contains all of D(P, path),
+# whose chain of folder/domain names within P (adjacent repeats folded) ends
+# in `path`'s `/` segments, and whose position within P contains all of
+# D(P, path),
 # must exist — the directory survives once per package that physically has
 # it. (Without this resolution rule the file set is empty on every fixture
 # whose directory sits under a source root or package root, and any node
@@ -287,6 +289,57 @@ symbol = "charge_card"
 path = "src/billing/helpers/charge.py"
 because = "..."
 
+# SC-5: a falsified move never reaches the `Recommended` tier. Read from the
+# result's cross-profile `advice` (`recommended` / `reviewCandidates`), never
+# a candidate tree: aggregation already folds every executed profile into one
+# tier per relocation, so the kind takes no mode. Tiers order
+# absent < review < recommended; `absent` means the result advises no
+# selected move at all. Selector: `path` is the full repo-relative file the
+# move LEAVES. Without `symbol` it selects whole-file advice relocating that
+# file (a primary or a mirrored test); with `symbol` it selects symbol advice
+# moving that symbol out of `path` (the census-checked current home, exactly
+# as preserve_symbol_home checks it). `to`, optional, narrows to advice
+# landing `path` there: a folder that holds census files today for a file
+# move, a census file for a symbol move. A mirrored test lands in its own
+# mirror `to`, which may differ from the entry's `destination`; a pin on the
+# test compares against that. The observed tier is the strongest
+# any selected entry holds, ordered absent < review < recommended. Exactly
+# one of `max_tier` (observed <= cap; an absent move passes), `min_tier`
+# (observed >= floor) or `exact_tier` (observed == tier). `max_tier =
+# "recommended"` caps nothing and `min_tier = "absent"` floors nothing; both
+# are rejected at load.
+[[assert.advice_tier]]
+path = "src/tree/validation/shape.ts"   # no `to`: caps every move out of it
+max_tier = "review"               # or "absent"; min_tier and exact_tier also available
+because = "..."
+
+# SC-5 by construction: fails when the `Recommended` advice breaks one of
+# this block's own pins. The engine atomizes advice into single-file entries
+# (each with its mirrored tests), so file pins are judged over the WHOLE
+# Recommended set applied at once: every relocated file lands in its entry's
+# `destination`, every mirrored test in its mirror `to`, every other file stays
+# in its current parent folder. A `keep_together` set breaks when its members
+# share one direct parent folder today and not afterwards; a set scattered
+# today never breaks, so a move gathering it is fine. A `preserve_dir` pin
+# breaks when a member lands outside the directory (resolved per package as
+# for preserve_dir). A `preserve_symbol_home` pin breaks per entry, when a
+# Recommended symbol move leaves the pinned home. Entries that disagree on a
+# file's destination count every destination. `Review candidate` entries
+# never trip it. Like advice_tier it reads the cross-profile advice and takes
+# no mode; because that advice folds every profile together, the guard SKIPS
+# pins with their own `mode` (the verdict reports how many). Load rejects a
+# second guard in a block, and a guard whose block has no mode-free
+# `keep_together`, `preserve_dir` or `preserve_symbol_home` pin to enforce.
+#
+# Whenever a block carries advice_tier or recommended_guard, the harness also
+# checks every advice path (moved files, mirrors, `fromPath`, `from`, `to`,
+# `toPath`, `destination`) against the census: a moved file must be a census
+# file, a destination must sit at or under a census folder. Any other path
+# fails the case as a harness error, so a path-format change cannot pass
+# every pin as `absent`.
+[[assert.recommended_guard]]
+because = "..."
+
 # --- optional reference best state: pair-F1 ONLY, never pass/fail ---------------
 # `path` is a label only: pair-F1 reads the listed files, never the name.
 # Reference names are NOT naming obligations (an ideal roof like `payments`
@@ -315,8 +368,23 @@ Per-kind keys (missing-required and unknown alike fail loud):
 | name_alignment | `min_ratio`, `min_members` | `mode` |
 | capacity_relief | `mode` | — |
 | non_inversion | — | — |
+| advice_tier | `path`; exactly one of `max_tier`/`min_tier`/`exact_tier` | `symbol`, `to` |
+| recommended_guard (at most one per block) | — | — |
 
 An assertion's own `mode` overrides `[assert].modes` for that assertion only.
+
+**Temporary: `expect_fail`.** `keep_together`, `separate`, `preserve_dir`,
+`preserve_symbol_home`, `advice_tier` and `recommended_guard` accept an
+optional `expect_fail = "<finding id>: <one-line cause>"` that marks a pin as
+a known-red witness. Markers are set only from an observed run, never
+predicted. The marker covers every verdict the pin produces, across all its
+modes. A marked pin that fails on any mode passes, and each verdict's detail
+reads `expected-fail (<reason>): <observation>`. A marked pin that passes on
+every mode fails once with `unexpectedly passed; remove expect_fail
+(<reason>)`, so a fix must delete the markers of the pins it turns green. An
+empty or blank reason is rejected at load. The key exists only while the
+`companion-folders` witnesses are red. Once the engine fixes land, it and
+every marker are removed.
 
 ### Pair-F1
 

@@ -65,7 +65,8 @@ pub(super) fn evaluate_preserve_symbol_home(
 }
 
 /// `preserve_dir`: within each package that physically has the directory, some
-/// folder/domain node named exactly `path` must still contain all of D(P, path).
+/// folder/domain node whose container chain ends in `path` must still contain
+/// all of D(P, path) (see [`surviving_container`]).
 pub(super) fn evaluate_preserve_dir(
     assertion: &PreserveDir,
     face: FaceMode,
@@ -118,8 +119,19 @@ pub(super) fn evaluate_preserve_dir(
     }
 }
 
-/// Whether some folder/domain descendant named exactly `path` contains every
-/// file in `expected` anywhere in its subtree.
+/// Whether some folder/domain descendant whose container chain ends in `path`
+/// contains every file in `expected` anywhere in its subtree.
+///
+/// The engine renders a nested directory by its increment over the enclosing
+/// domain: `tree/validation` is a `validation` folder under the `tree`
+/// domain, and a domain's echo folder repeats its name (`tree` → `tree`). A
+/// bare `name == path` test therefore never finds a nested directory. The
+/// node is named by its chain of folder/domain names within the package
+/// instead, with each echo folded, and `path` must equal that chain's last
+/// segments, compared whole on `/`: `tree/validation` matches
+/// `tree/validation` but not `parser/validation`, and never a `validation`
+/// that only ends in the same characters. A one-segment `path` matches the
+/// node's own name, as before.
 ///
 /// Unlike the counting predicates this is deliberately SUBTREE-scoped:
 /// `preserve_dir` pins tearing, and tearing means expected files LEAVING the
@@ -128,10 +140,11 @@ pub(super) fn evaluate_preserve_dir(
 /// beneath it looks like.
 fn surviving_container(package_node: &ContainerNode, path: &str, expected: &[String]) -> bool {
     let expected_set: BTreeSet<&String> = expected.iter().collect();
+    let wanted: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     let mut found = false;
     {
-        let mut visit = |node: &ContainerNode, _chain: &str| {
-            if node.name == path && metrics::is_scoped_container(node) {
+        let mut visit = |node: &ContainerNode, chain: &str| {
+            if chain_ends_with(chain, &wanted) && metrics::is_scoped_container(node) {
                 let member_list = metrics::members(node);
                 let members: BTreeSet<&String> = member_list.iter().collect();
                 if expected_set.is_subset(&members) {
@@ -142,6 +155,15 @@ fn surviving_container(package_node: &ContainerNode, path: &str, expected: &[Str
         metrics::walk_containers(package_node, &mut visit);
     }
     found
+}
+
+/// Whether the `/`-joined container `chain` ends in the segments `wanted`,
+/// once each repeated adjacent segment (a domain and its echo folder) is
+/// folded into one.
+fn chain_ends_with(chain: &str, wanted: &[&str]) -> bool {
+    let mut segments: Vec<&str> = chain.split('/').filter(|part| !part.is_empty()).collect();
+    segments.dedup();
+    !wanted.is_empty() && segments.ends_with(wanted)
 }
 
 /// `keep_together` / `separate`: co-location required, or co-location banned,
@@ -219,16 +241,21 @@ pub(super) fn evaluate_path_set(
 
 #[cfg(test)]
 mod tests {
-    use unlace_engine::result::Level;
+    use std::collections::BTreeSet;
+
+    use unlace_engine::result::{ContainerNode, Level};
 
     use crate::harness::assertions::fixtures::{
         file, file_with_symbols, inputs_with, laminar_candidate, node, torn_candidate,
     };
-    use crate::harness::inputs::{find_package_node, packages_holding};
+    use crate::harness::inputs::{
+        EvalInputs, FaceInputs, discover_packages, find_package_node, packages_holding,
+    };
+    use crate::metrics::{members, structural_placement};
     use crate::target::{FaceMode, PathSetAssertion, PreserveDir, PreserveSymbolHome};
 
     use super::{
-        evaluate_path_set, evaluate_preserve_dir, evaluate_preserve_symbol_home,
+        chain_ends_with, evaluate_path_set, evaluate_preserve_dir, evaluate_preserve_symbol_home,
         surviving_container,
     };
 
@@ -238,6 +265,7 @@ mod tests {
             path: path.to_owned(),
             mode: None,
             because: "the home holds in the best state".to_owned(),
+            expect_fail: None,
         }
     }
 
@@ -300,6 +328,7 @@ mod tests {
                     path: "billing".to_owned(),
                     mode: None,
                     because: "billing survives".to_owned(),
+                    expect_fail: None,
                 },
                 face,
                 &inputs,
@@ -309,6 +338,7 @@ mod tests {
                     paths: vec!["billing/invoice.py".to_owned(), "pipeline.py".to_owned()],
                     mode: None,
                     because: "unrelated".to_owned(),
+                    expect_fail: None,
                 },
                 face,
                 &inputs,
@@ -398,6 +428,7 @@ mod tests {
                 path: "billing".to_owned(),
                 mode: None,
                 because: "billing survives whole".to_owned(),
+                expect_fail: None,
             },
             FaceMode::Anchored,
             &inputs_with(&partial),
@@ -417,6 +448,7 @@ mod tests {
                 path: "billing".to_owned(),
                 mode: None,
                 because: "billing survives".to_owned(),
+                expect_fail: None,
             },
             FaceMode::Anchored,
             &inputs_with(&torn),
@@ -437,6 +469,7 @@ mod tests {
             path: path.to_owned(),
             mode: None,
             because: "the directory survives".to_owned(),
+            expect_fail: None,
         };
 
         let kept = evaluate_preserve_dir(&preserve("billing"), FaceMode::Anchored, &inputs);
@@ -454,12 +487,158 @@ mod tests {
         );
     }
 
+    /// The engine's render of nested directories (the companion-folders
+    /// shape): `tree/validation` is a `validation` folder beside the `tree`
+    /// echo folder under the `tree` domain, and `inline` exists twice.
+    fn nested_tree(validation_home: &str) -> ContainerNode {
+        let validation = vec![
+            file("src/tree/validation/shape.ts"),
+            file("src/tree/validation/record.ts"),
+        ];
+        let (tree_children, parser_children) = if validation_home == "tree" {
+            (
+                vec![
+                    node(Level::Folder, "tree", vec![file("src/tree/validation.ts")]),
+                    node(Level::Folder, "validation", validation),
+                ],
+                vec![node(
+                    Level::Folder,
+                    "inline",
+                    vec![file("src/parser/inline/annotation.ts")],
+                )],
+            )
+        } else {
+            (
+                vec![node(
+                    Level::Folder,
+                    "tree",
+                    vec![file("src/tree/validation.ts")],
+                )],
+                vec![
+                    node(
+                        Level::Folder,
+                        "inline",
+                        vec![file("src/parser/inline/annotation.ts")],
+                    ),
+                    node(Level::Folder, "validation", validation),
+                ],
+            )
+        };
+        node(
+            Level::PackageGroup,
+            "root",
+            vec![node(
+                Level::Package,
+                "app",
+                vec![
+                    node(Level::Domain, "tree", tree_children),
+                    node(Level::Domain, "parser", parser_children),
+                    node(
+                        Level::Domain,
+                        "stringifier",
+                        vec![node(
+                            Level::Folder,
+                            "inline",
+                            vec![file("src/stringifier/inline/reference.ts")],
+                        )],
+                    ),
+                ],
+            )],
+        )
+    }
+
+    /// Inputs whose census and current layout are `current`, judging
+    /// `candidate` as the anchored face.
+    fn inputs_over<'a>(current: &ContainerNode, candidate: &'a ContainerNode) -> EvalInputs<'a> {
+        let census: BTreeSet<String> = members(current).into_iter().collect();
+        EvalInputs {
+            current_placement: structural_placement(current),
+            packages: discover_packages(current, &census),
+            census,
+            faces: [(
+                FaceMode::Anchored,
+                FaceInputs {
+                    tree: candidate,
+                    capacity_remaining: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    fn preserve(path: &str) -> PreserveDir {
+        PreserveDir {
+            path: path.to_owned(),
+            mode: None,
+            because: "the directory survives".to_owned(),
+            expect_fail: None,
+        }
+    }
+
+    #[test]
+    fn preserve_dir_finds_a_nested_directory_rendered_under_its_parent_domain() {
+        let current = nested_tree("tree");
+        let inputs = inputs_over(&current, &current);
+
+        let nested =
+            evaluate_preserve_dir(&preserve("tree/validation"), FaceMode::Anchored, &inputs);
+        let parent = evaluate_preserve_dir(&preserve("tree"), FaceMode::Anchored, &inputs);
+        let sibling =
+            evaluate_preserve_dir(&preserve("parser/inline"), FaceMode::Anchored, &inputs);
+
+        assert!(nested.passed, "{}", nested.detail);
+        assert!(parent.passed, "{}", parent.detail);
+        assert!(sibling.passed, "{}", sibling.detail);
+    }
+
+    #[test]
+    fn preserve_dir_rejects_a_same_named_directory_elsewhere() {
+        let current = nested_tree("tree");
+        let moved = nested_tree("parser");
+        let inputs = inputs_over(&current, &moved);
+
+        let verdict =
+            evaluate_preserve_dir(&preserve("tree/validation"), FaceMode::Anchored, &inputs);
+
+        assert!(
+            !verdict.passed,
+            "a validation folder under parser holding every member is not tree/validation: {}",
+            verdict.detail
+        );
+        assert_eq!(
+            verdict.detail,
+            "directory tearing: package app: no folder/domain node named \"tree/validation\" holds all of D = [src/tree/validation/record.ts, src/tree/validation/shape.ts]"
+        );
+    }
+
+    #[test]
+    fn container_chains_match_whole_trailing_segments() {
+        assert!(chain_ends_with("tree/validation", &["tree", "validation"]));
+        assert!(chain_ends_with("tree/tree", &["tree"]));
+        assert!(chain_ends_with(
+            "helpers/tree/validation",
+            &["tree", "validation"]
+        ));
+        assert!(!chain_ends_with(
+            "parser/validation",
+            &["tree", "validation"]
+        ));
+        assert!(!chain_ends_with(
+            "tree/subvalidation",
+            &["tree", "validation"]
+        ));
+        assert!(!chain_ends_with("validation", &["tree", "validation"]));
+        assert!(!chain_ends_with("tree", &[]));
+    }
+
     #[test]
     fn path_sets_judge_co_location_over_first_level_members() {
         let pair = |left: &str, right: &str| PathSetAssertion {
             paths: vec![left.to_owned(), right.to_owned()],
             mode: None,
             because: "the pair's relation holds in the best state".to_owned(),
+            expect_fail: None,
         };
         let laminar = laminar_candidate();
         let laminar_inputs = inputs_with(&laminar);

@@ -4,6 +4,7 @@
 
 use std::error::Error;
 
+use unlace_eval::target::Tier;
 use unlace_eval::{EvalError, TargetSpec, load_target};
 
 /// The case name every synthetic target below is validated under.
@@ -446,6 +447,77 @@ because = "Invoice stays home"
 }
 
 #[test]
+fn advice_tier_parses_min_tier_and_rejects_a_vacuous_or_doubled_floor() -> TestResult {
+    let pin = |keys: &str| {
+        format!(
+            r#"{BOTH_RUN}
+[[assert]]
+modes = ["anchored", "greenfield"]
+
+[[assert.advice_tier]]
+symbol = "formatRow"
+path = "src/report/format.ts"
+{keys}
+because = "the move survives into the advice"
+"#
+        )
+    };
+    let spec = parse(&pin(r#"min_tier = "review""#))?;
+    let floors: Vec<_> = spec
+        .assert
+        .iter()
+        .flat_map(|block| &block.advice_tier)
+        .map(|advice| (advice.min_tier, advice.max_tier, advice.exact_tier))
+        .collect();
+    assert_eq!(floors, vec![(Some(Tier::Review), None, None)]);
+    spec.validate(PROBE)?;
+
+    assert!(
+        parse(&pin(r#"min_tier = "best""#)).is_err(),
+        "an unknown tier name fails to parse"
+    );
+    assert_rejections(&[
+        (pin(r#"min_tier = "absent""#), "floors nothing"),
+        (
+            pin("min_tier = \"review\"\nmax_tier = \"review\""),
+            "exactly one of max_tier/min_tier/exact_tier",
+        ),
+    ])
+}
+
+#[test]
+fn expect_fail_accepts_a_named_reason_and_rejects_an_empty_one() -> TestResult {
+    let marked = |reason: &str| {
+        format!(
+            r#"{BOTH_RUN}
+[[assert]]
+modes = ["anchored", "greenfield"]
+
+[[assert.preserve_symbol_home]]
+symbol = "inferMatches"
+path = "src/differ/inference.ts"
+because = "the entry point stays with its helpers"
+expect_fail = "{reason}"
+"#
+        )
+    };
+    let spec = parse(&marked("F3: inferMatches moves to matcher.ts"))?;
+    let reasons: Vec<_> = spec
+        .assert
+        .iter()
+        .flat_map(|block| &block.preserve_symbol_home)
+        .map(|home| home.expect_fail.as_deref())
+        .collect();
+    assert_eq!(reasons, vec![Some("F3: inferMatches moves to matcher.ts")]);
+    spec.validate(PROBE)?;
+
+    assert_rejections(&[
+        (marked(""), "expect_fail needs a non-empty reason"),
+        (marked("  "), "expect_fail needs a non-empty reason"),
+    ])
+}
+
+#[test]
 fn load_target_reports_unreadable_and_unparsable_targets() -> TestResult {
     let missing = load_target("no-such-target")
         .err()
@@ -470,4 +542,37 @@ fn load_target_reports_unreadable_and_unparsable_targets() -> TestResult {
         "a parse failure carries the TOML error verbatim: {malformed}"
     );
     Ok(())
+}
+
+#[test]
+fn advice_pins_and_the_recommended_guard_need_a_rationale() -> TestResult {
+    let unexplained_pin = format!(
+        r#"{BOTH_RUN}
+[[assert]]
+modes = ["anchored", "greenfield"]
+
+[[assert.advice_tier]]
+path = "src/report/format.ts"
+max_tier = "review"
+because = "  "
+"#
+    );
+    let unexplained_guard = format!(
+        r#"{BOTH_RUN}
+[[assert]]
+modes = ["anchored", "greenfield"]
+
+[[assert.keep_together]]
+paths = ["src/report/format.ts", "src/report/table.ts"]
+because = "the report helpers stay together"
+
+[[assert.recommended_guard]]
+because = "  "
+"#
+    );
+
+    assert_rejections(&[
+        (unexplained_pin, "advice_tier: every block carries"),
+        (unexplained_guard, "recommended_guard: every block carries"),
+    ])
 }
