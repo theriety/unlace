@@ -576,3 +576,64 @@ because = "  "
         (unexplained_guard, "recommended_guard: every block carries"),
     ])
 }
+
+#[test]
+fn cycle_import_cut_needs_a_rationale_two_files_and_a_well_formed_expect() -> TestResult {
+    let pin = |keys: &str| {
+        format!(
+            r#"{BOTH_RUN}
+[[assert]]
+modes = ["anchored"]
+
+[[assert.cycle_import_cut]]
+{keys}
+"#
+        )
+    };
+    let files = r#"files = ["src/parser/adapters.ts", "src/parser/build.ts"]"#;
+    let because = r#"because = "C1: the cycle names an import cut""#;
+    let expect = |importer: &str, imported: &str, line: u32| {
+        format!(
+            "{files}\nexpect = {{ importer = \"{importer}\", imported = \"{imported}\", line = {line} }}\n{because}"
+        )
+    };
+    let expect_rule =
+        "cycle_import_cut.expect needs two different non-empty files and a 1-based line";
+
+    parse(&pin(&format!("{files}\n{because}")))?.validate(PROBE)?;
+    parse(&pin(&expect(
+        "src/parser/adapters.ts",
+        "src/parser/build.ts",
+        7,
+    )))?
+    .validate(PROBE)?;
+    assert_rejections(&[
+        (
+            pin(&format!("{files}\nbecause = \"  \"")),
+            "cycle_import_cut: every block carries",
+        ),
+        (
+            pin(&format!("files = [\"src/parser/adapters.ts\"]\n{because}")),
+            "cycle_import_cut needs at least two non-empty file paths",
+        ),
+        (
+            pin(&format!(
+                "files = [\"src/parser/adapters.ts\", \" \"]\n{because}"
+            )),
+            "cycle_import_cut needs at least two non-empty file paths",
+        ),
+        (
+            pin(&expect(
+                "src/parser/adapters.ts",
+                "src/parser/adapters.ts",
+                7,
+            )),
+            expect_rule,
+        ),
+        (pin(&expect(" ", "src/parser/build.ts", 7)), expect_rule),
+        (
+            pin(&expect("src/parser/adapters.ts", "src/parser/build.ts", 0)),
+            expect_rule,
+        ),
+    ])
+}

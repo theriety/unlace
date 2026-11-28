@@ -3,7 +3,7 @@
 use crate::error::EvalError;
 
 use super::validate::{invalid, rationale};
-use super::{AdviceTier, AssertBlock, FaceMode, RunMode, TargetSpec, Tier};
+use super::{AdviceTier, AssertBlock, CycleImportCut, FaceMode, RunMode, TargetSpec, Tier};
 
 impl TargetSpec {
     /// Per-kind assertion rules over one validated block.
@@ -103,6 +103,9 @@ impl TargetSpec {
                 ));
             }
         }
+        for pin in &block.cycle_import_cut {
+            lift(check_cycle_pin(pin))?;
+        }
         for pin in &block.advice_tier {
             lift(check_advice_pin(pin))?;
         }
@@ -135,6 +138,25 @@ impl TargetSpec {
 }
 
 /// Applies [`rationale`] with the assertion kind folded into the message.
+/// A cycle pin needs a rationale and two non-empty files; an `expect` needs
+/// two different non-empty files and, when given, a 1-based line.
+fn check_cycle_pin(pin: &CycleImportCut) -> Result<(), String> {
+    check_rationale(&pin.because, "cycle_import_cut")?;
+    if pin.files.len() < 2 || pin.files.iter().any(|file| file.trim().is_empty()) {
+        return Err("cycle_import_cut needs at least two non-empty file paths".to_owned());
+    }
+    if let Some(expect) = &pin.expect {
+        let blank = expect.importer.trim().is_empty() || expect.imported.trim().is_empty();
+        if blank || expect.importer == expect.imported || expect.line == Some(0) {
+            return Err(
+                "cycle_import_cut.expect needs two different non-empty files and a 1-based line"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// An advice pin needs a rationale, a non-empty path (and symbol and
 /// destination when given), and exactly one of `max_tier`/`min_tier`/
 /// `exact_tier`. A `max_tier` of `recommended` caps nothing and a `min_tier`
@@ -314,6 +336,7 @@ mod tests {
             capacity_relief: Vec::new(),
             non_inversion: Vec::new(),
             preserve_symbol_home: homes,
+            cycle_import_cut: Vec::new(),
             advice_tier: Vec::new(),
             recommended_guard: guards,
         }

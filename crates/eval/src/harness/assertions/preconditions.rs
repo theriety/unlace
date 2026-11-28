@@ -194,6 +194,7 @@ mod tests {
             detail: "observed".to_owned(),
             break_suggestions: None,
             capacity: None,
+            import_cycle: None,
         }
     }
 
@@ -224,6 +225,7 @@ mod tests {
                 severity: EngineSeverity::Borderline,
                 location: vec!["src".to_owned(), "hub".to_owned()],
                 detail: "over cap".to_owned(),
+                import_cycle: None,
                 break_suggestions: None,
                 capacity: None,
             },
@@ -232,6 +234,7 @@ mod tests {
                 severity: EngineSeverity::Borderline,
                 location: vec!["ingest.hub".to_owned()],
                 detail: "dotted container".to_owned(),
+                import_cycle: None,
                 break_suggestions: None,
                 capacity: None,
             },

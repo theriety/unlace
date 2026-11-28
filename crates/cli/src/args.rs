@@ -148,7 +148,11 @@ pub(super) struct ViolationsCli {
     /// Parallelism for parsing.
     #[arg(long)]
     pub(super) jobs: Option<u32>,
-    /// Comma-separated `kind[:severity]` selectors that trigger exit code 2.
+    /// Comma-separated `kind[:severity]` selectors that trigger exit code 2:
+    /// kinds are cycle, polarity, capacity, visibility and testOnly; severities
+    /// are violation and borderline. `cycle-coverage` (or `cycleCoverage`)
+    /// also exits 2 when some files state no imports, so the cycle analysis is
+    /// partial or unavailable. Without `--fail-on` the exit code is 0.
     #[arg(long)]
     pub(super) fail_on: Option<String>,
     /// Output format.

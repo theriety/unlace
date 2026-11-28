@@ -8,8 +8,9 @@ All findings and moves are suggestions. Applying them may break the build; use y
 
 ```text
 Shared findings (1)
-  - cycle [violation] `alpha.ts`/`beta.ts`/`gamma.ts` — 3-symbol cycle; unlace keeps a dependency
-    cycle in one file; to split it, break `stepGamma` -> `stepAlpha` (w=1.0, exact)
+  - cycle [borderline] `alpha.ts`/`beta.ts`/`gamma.ts` — 3-file import cycle; to break it, remove
+    `./beta` (line 1) from `alpha.ts`, which carries 1 symbol reference (`stepAlpha` ->
+    `stepBeta`) (exact); no import in it runs at load time
 
 anchored profile-specific findings (0)
   None.

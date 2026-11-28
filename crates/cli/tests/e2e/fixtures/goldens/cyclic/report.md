@@ -8,8 +8,8 @@ All findings and moves are suggestions. Applying them may break the build; use y
 
 ```text
 Shared findings (1)
-  - cycle [violation] `alpha.py`/`beta.py` — 2-symbol cycle; unlace keeps a dependency cycle in
-    one file; to split it, break `beta_step` -> `alpha_step` (w=1.0, exact)
+  - cycle [violation] `alpha.py`/`beta.py` — 2-file import cycle; to break it, remove `beta` (line
+    3) from `alpha.py`, which carries 1 symbol reference (`alpha_step` -> `beta_step`) (exact)
 
 anchored profile-specific findings (0)
   None.

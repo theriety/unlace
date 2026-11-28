@@ -10,7 +10,9 @@ use unlace_ir::{
 };
 
 use crate::config::{AnalyzeConfig, ProfileName, TestsConfig};
-use crate::result::{CapacityBreach, CapacityUnit, Level, Severity, Violation, ViolationKind};
+use crate::result::{
+    CapacityBreach, CapacityUnit, ImportCycleStatus, Level, Severity, Violation, ViolationKind,
+};
 
 use super::*;
 use crate::analyze::test_policy::TestPolicy;
@@ -58,9 +60,10 @@ fn should_omit_a_same_file_cycle_from_shared_and_profile_findings() -> Result<()
 }
 
 #[test]
-fn should_report_a_cycle_whose_members_sit_outside_any_file_container() -> Result<(), String> {
-    // only proven intra-file recursion is suppressed: symbols attached straight
-    // to a folder prove no shared file, so their cycle stays reportable.
+fn should_report_no_cycle_whose_members_sit_outside_any_file_container() -> Result<(), String> {
+    // cycle findings are file-import cycles (ADR-35): symbols attached straight
+    // to a folder sit in no file, so they form no import edge and touch no file
+    // lacking import facts; there is nothing to cut and nothing unavailable.
     let snapshot = snapshot(
         vec![
             node(0, "a", 0, Polarity::Production),
@@ -79,12 +82,7 @@ fn should_report_a_cycle_whose_members_sit_outside_any_file_container() -> Resul
         .iter()
         .filter(|finding| finding.kind == ViolationKind::Cycle)
         .collect();
-    assert_eq!(cycles.len(), 1, "{cycles:?}");
-    assert_eq!(
-        cycles.first().map(|cycle| cycle.location.len()),
-        Some(0),
-        "no member resolves to a file, so the cycle names no file"
-    );
+    assert!(cycles.is_empty(), "{cycles:?}");
     Ok(())
 }
 
@@ -126,8 +124,11 @@ fn should_offer_a_conditional_split_for_a_cycle_larger_than_the_file_cap() -> Re
 }
 
 #[test]
-fn should_label_a_cycle_break_heuristic_when_the_scc_exceeds_the_ilp_threshold()
--> Result<(), String> {
+fn should_leave_cycle_findings_to_the_import_graph_whatever_the_ilp_threshold() -> Result<(), String>
+{
+    // findings no longer read the symbol MFAS (ADR-35), so the ILP threshold
+    // that labels a symbol cut heuristic changes no cycle finding: a cycle
+    // through files that state no imports is one shared, unavailable finding.
     let snapshot = snapshot(
         vec![
             node(0, "left", 0, Polarity::Production),
@@ -143,11 +144,10 @@ fn should_label_a_cycle_break_heuristic_when_the_scc_exceeds_the_ilp_threshold()
     config.profiles.anchored.solver.ilp_threshold = 1;
 
     let result = analyze(&snapshot, &config).map_err(|error| error.to_string())?;
-    let cycle_detail = |findings: &[Violation]| {
+    let has_cycle = |findings: &[Violation]| {
         findings
             .iter()
-            .find(|finding| finding.kind == ViolationKind::Cycle)
-            .map(|finding| finding.detail.clone())
+            .any(|finding| finding.kind == ViolationKind::Cycle)
     };
     let anchored = result
         .profiles
@@ -159,19 +159,17 @@ fn should_label_a_cycle_break_heuristic_when_the_scc_exceeds_the_ilp_threshold()
         .greenfield
         .as_ref()
         .ok_or("missing greenfield profile")?;
+    let statuses: Vec<Option<ImportCycleStatus>> = result
+        .current
+        .shared_findings
+        .iter()
+        .filter(|finding| finding.kind == ViolationKind::Cycle)
+        .map(|finding| finding.import_cycle.as_ref().map(|cycle| cycle.status))
+        .collect();
 
-    assert_eq!(
-        cycle_detail(&anchored.current.unique_findings),
-        Some(
-            "2-symbol cycle; unlace keeps a dependency cycle in one file; to split it, break \
-             right -> left (w=1.0, heuristic)"
-                .to_owned()
-        )
-    );
-    assert!(
-        cycle_detail(&greenfield.current.unique_findings)
-            .is_some_and(|detail| detail.contains(", exact)"))
-    );
+    assert!(!has_cycle(&anchored.current.unique_findings));
+    assert!(!has_cycle(&greenfield.current.unique_findings));
+    assert_eq!(statuses, vec![Some(ImportCycleStatus::Unavailable)]);
     Ok(())
 }
 
@@ -214,12 +212,12 @@ fn should_emit_identical_findings_once_as_shared() {
         cycle.map(|finding| finding.location.as_slice()),
         Some(["src/left.rs".to_owned(), "src/right.rs".to_owned()].as_slice())
     );
+    // no file states its imports, so the symbol cycle stands in as an
+    // unavailable import cycle (ADR-35).
     assert!(cycle.is_some_and(|finding| {
-        finding
-            .detail
-            .contains("unlace keeps a dependency cycle in one file")
-            && finding.detail.contains("to split it, break")
-            && !finding.detail.contains("must remain")
+        finding.detail
+            == "dependency cycle through 2 files; import facts are unavailable for \
+                src/left.rs, src/right.rs, so the imports to remove cannot be named"
     }));
     assert_eq!(anchored_unique, []);
     assert_eq!(greenfield_unique, []);
@@ -913,6 +911,7 @@ fn should_sort_violations_by_severity_then_kind_then_location() {
         severity,
         location: vec![location.to_owned()],
         detail: String::new(),
+        import_cycle: None,
         break_suggestions: None,
         capacity: None,
     };
@@ -958,6 +957,7 @@ fn should_deduplicate_findings_by_complete_serialized_identity() {
         severity: Severity::Violation,
         location: vec!["workspace/area".to_owned()],
         detail: "folder holds 3 against a cap of 1".to_owned(),
+        import_cycle: None,
         break_suggestions: None,
         capacity: Some(CapacityBreach {
             measured: 3,
@@ -998,6 +998,7 @@ fn should_count_only_hard_capacity_findings_as_breaks() {
         severity,
         location: vec![location.to_owned()],
         detail: String::new(),
+        import_cycle: None,
         break_suggestions: None,
         capacity: None,
     };

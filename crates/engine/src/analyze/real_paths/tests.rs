@@ -143,6 +143,7 @@ fn result() -> AnalyzeResult {
             files_by_language: BTreeMap::new(),
         },
         current: CurrentTree {
+            cycle_coverage: crate::result::CycleCoverage::default(),
             tree: ContainerNode {
                 name: text("proj"),
                 level: Level::PackageGroup,
@@ -335,6 +336,7 @@ fn finding(kind: ViolationKind, location: &[&str]) -> Violation {
         severity: Severity::Violation,
         location: location.iter().map(|segment| text(segment)).collect(),
         detail: text("detail"),
+        import_cycle: None,
         break_suggestions: None,
         capacity: None,
     }

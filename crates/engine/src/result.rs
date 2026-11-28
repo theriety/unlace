@@ -25,7 +25,9 @@ pub use self::advice::{
 };
 pub use self::candidate::{Candidate, ContainerNode, Level, ScoreBreakdown, SymbolPlacement};
 pub use self::finding::{
-    CapacityBreach, CapacityUnit, ConditionalSplit, EdgeBreak, Severity, Violation, ViolationKind,
+    CapacityBreach, CapacityUnit, ConditionalSplit, CycleAnalysis, CycleCoverage, EdgeBreak,
+    ImportBreak, ImportCycle, ImportCycleStatus, ImportStatement, NoLoadOrder, Severity,
+    SymbolReference, Violation, ViolationKind,
 };
 pub(crate) use self::group_keyed::GroupKeyed;
 pub use self::movement::{
@@ -40,7 +42,8 @@ pub use self::settings::TestSettings;
 /// The schema version stamped into every [`AnalyzeResult`] this crate produces.
 ///
 /// Schema 12 carries each symbol move's per-term objective shift
-/// ([`TermShift`]). Readers reject a version outside
+/// ([`TermShift`]); DRF14 adds file-grain cycle findings under the same
+/// version (ADR-35). Readers reject a version outside
 /// [`MIN_RESULT_SCHEMA_VERSION`]`..=RESULT_SCHEMA_VERSION` rather than
 /// misread an unknown shape.
 pub const RESULT_SCHEMA_VERSION: u32 = 12;

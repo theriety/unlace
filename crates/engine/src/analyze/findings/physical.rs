@@ -199,6 +199,7 @@ pub(in crate::analyze) fn physical_folder_findings_with_real(
                     .real_location()
                     .unwrap_or_else(|| vec![path.join("/")]),
                 detail: breach.describe(path),
+                import_cycle: None,
                 break_suggestions: None,
                 capacity: Some(breach),
             })

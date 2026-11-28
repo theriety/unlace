@@ -119,6 +119,23 @@ symbol = "appendToken"
 path = "src/syntax/inline/tokens.ts"
 because = "appendToken is called by InlineScanner (3 sites) and BracketResolver (1 site); moving it into the minority caller brackets.ts on a file-id tie is not a better home than the shared tokens module (F9)"
 
+# --- C1: a cross-file cycle names an import cut (SC-4, ADR-35) --------------
+
+# Substrates kept in the fixture: parser/adapters.ts <-> parser/build.ts (the
+# mdc finding) and lexer/block.ts <-> lexer/block/mdcx.ts <-> lexer/container/*
+# (reproduces on HEAD's debug build). 1.0.0 offered only same-file symbol cuts
+# for both.
+
+[[assert.cycle_import_cut]]
+files = ["src/parser/adapters.ts", "src/parser/build.ts"]
+expect = { importer = "src/parser/adapters.ts", imported = "src/parser/build.ts", line = 7 }
+because = "C1: a cross-file cycle finding must name break edges that remove the cross-file dependency, never only same-file cuts; the mdc finding offered only applyAdapters -> recognizeAdapter inside adapters.ts"
+
+[[assert.cycle_import_cut]]
+files = ["src/lexer/block.ts", "src/lexer/block/mdcx.ts"]
+expect = { importer = "src/lexer/block/mdcx.ts", imported = "src/lexer/block.ts", line = 3 }
+because = "C1: a cross-file cycle finding must name break edges that remove the cross-file dependency, never only same-file cuts; the lexer/block.ts <-> lexer/block/mdcx.ts <-> lexer/container/* cycle reproduced the same-file-only shape on HEAD's debug build. The cut removes the children's '../block' back edges, never block.ts's own imports of block/* (ADR-35 cut direction)"
+
 # --- SC-5: no falsified move reaches the Recommended tier --------------------
 
 # The pins above judge each mode's best candidate; these judge the result's

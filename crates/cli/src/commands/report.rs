@@ -89,12 +89,14 @@ mod tests {
                 files_by_language: BTreeMap::new(),
             },
             current: CurrentTree {
+                cycle_coverage: unlace_engine::CycleCoverage::default(),
                 tree: file("lib"),
                 shared_findings: vec![Violation {
                     kind: ViolationKind::Cycle,
                     severity: Severity::Violation,
                     location: vec!["a".to_owned()],
                     detail: "cycle".to_owned(),
+                    import_cycle: None,
                     break_suggestions: None,
                     capacity: None,
                 }],

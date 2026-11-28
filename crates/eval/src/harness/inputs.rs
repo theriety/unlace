@@ -166,6 +166,15 @@ pub(super) fn validate_references(
             }
         }
     };
+    for pin in &block.cycle_import_cut {
+        check_file_set("cycle_import_cut", &pin.files);
+        if let Some(expect) = &pin.expect {
+            check_file_set(
+                "cycle_import_cut.expect",
+                &[expect.importer.clone(), expect.imported.clone()],
+            );
+        }
+    }
     for assertion in block.keep_together.iter().chain(block.separate.iter()) {
         check_file_set("keep_together/separate", &assertion.paths);
     }
@@ -495,6 +504,23 @@ candidate = 1
 
     fn pin(fields: &str) -> String {
         format!("[[assert.advice_tier]]\n{fields}\nmax_tier = \"review\"\nbecause = \"F\"\n")
+    }
+
+    /// A `cycle_import_cut` pin over `files` with no `expect`.
+    fn cycle_pin(files: &[&str]) -> String {
+        format!("[[assert.cycle_import_cut]]\nfiles = {files:?}\nbecause = \"C1\"\n")
+    }
+
+    #[test]
+    fn should_check_the_files_of_a_cycle_pin_without_an_expect() {
+        let known = errors_for(&cycle_pin(&[INFERENCE, SHAPE]));
+        let misspelled = errors_for(&cycle_pin(&[INFERENCE, "src/tree/validation/shap.ts"]));
+
+        assert_eq!(known, Vec::<String>::new());
+        assert_eq!(misspelled.len(), 1, "{misspelled:?}");
+        assert!(misspelled.iter().all(|error| {
+            error.contains("cycle_import_cut references \"src/tree/validation/shap.ts\"")
+        }));
     }
 
     #[test]

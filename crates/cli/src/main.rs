@@ -6,8 +6,10 @@
 //!
 //! Exit codes are fixed (AD-8): `0` on success, `1` for any [`UnlaceError`]
 //! (printed with the error's remedy code), and `2` reserved exclusively for a
-//! `violations --fail-on` match. A borderline capacity finding never gates, so it
-//! never produces a `2`.
+//! `violations --fail-on` match: a hard violation of a listed class, or, only
+//! when `cycle-coverage` is listed, cycle coverage that is not complete. A
+//! borderline finding never gates, so it never produces a `2`, and neither does
+//! partial coverage without the opt-in selector.
 
 mod args;
 mod commands;
@@ -25,7 +27,8 @@ use crate::dispatch::dispatch;
 
 /// Parses the arguments, dispatches the subcommand, and maps the result to an
 /// exit code: `0` success, `1` any error (including a clap usage error), `2` a
-/// `violations --fail-on` match.
+/// `violations --fail-on` match (a listed violation class, or incomplete cycle
+/// coverage under `--fail-on cycle-coverage`).
 ///
 /// Clap's own parse failures are intercepted here so a malformed flag, unknown
 /// subcommand, or bad value yields exit `1` — never the default `2` — keeping `2`
