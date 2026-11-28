@@ -166,17 +166,19 @@ mod tests {
     fn saved(result: &AnalyzeResult) -> PathBuf {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("unlace-tree-{}-{unique}.json", nanos()));
+        let path = std::env::temp_dir().join(format!("unlace-tree-{}-{unique}.json", stamp()));
         let _ = std::fs::write(&path, serde_json::to_vec(result).unwrap_or_default());
         path
     }
 
-    /// Returns a unique nanosecond stamp.
-    fn nanos() -> u128 {
-        std::time::SystemTime::now()
+    /// Returns a temp-path stamp: the process id, because nextest runs each test
+    /// in its own process, then the time.
+    fn stamp() -> String {
+        let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        format!("{}-{nanos}", std::process::id())
     }
 
     #[test]

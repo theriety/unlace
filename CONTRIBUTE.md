@@ -35,6 +35,8 @@ Run everything across all seven crates:
 cargo nextest run --workspace      # or: cargo test --workspace
 ```
 
+The first build compiles every dependency with optimisation (`[profile.dev.package."*"]` in [`Cargo.toml`](Cargo.toml)), which takes a few minutes. Without that setting, rust-analyzer's crates run unoptimised and each Rust-fixture test takes about ten times longer. After that build, only unlace's own crates rebuild, and they stay unoptimised. The dependencies compile again for the first coverage run, which uses its own target directory, and after a toolchain change; a `Cargo.lock` change rebuilds only the packages it touches and their dependents.
+
 This covers three tiers, from cheapest to most integrated:
 
 1. **Unit tests** — inline `#[cfg(test)] mod tests` modules inside each crate's `src`. They pin individual algorithms and data structures (most live in `crates/core`).
@@ -135,10 +137,10 @@ The `bacon` jobs mirror these gates exactly — `clippy` (the default job), `che
 
 ## Coverage gate
 
-CI's `Coverage` job requires **100% of production lines, functions and regions** to run under the test suite. Measure locally with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) (`cargo install cargo-llvm-cov`, plus `rustup component add llvm-tools-preview`):
+CI's `Coverage` job requires **100% of production lines, functions and regions** to run under the test suite. It is also CI's only run of the unit, integration and e2e tests, so a failing test fails it; `Verify` runs formatting, clippy and doctests. Measure locally with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) (`cargo install cargo-llvm-cov`, plus `rustup component add llvm-tools-preview`). CI runs the tests through nextest; without nextest, run `cargo llvm-cov --workspace --locked --no-report` instead of the first line:
 
 ```sh
-cargo llvm-cov --workspace --locked --no-report
+cargo llvm-cov nextest --workspace --locked --no-report
 cargo llvm-cov report --json --output-path coverage.json
 cargo llvm-cov report --lcov --output-path coverage.lcov
 python3 scripts/coverage-gate.py coverage.json coverage.lcov .

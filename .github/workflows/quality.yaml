@@ -33,20 +33,21 @@ jobs:
         run: rustup toolchain install
       - name: Setup Build Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # rust-cache never hashes the root workspace manifest, so a [profile]
+          # change would restore stale dependencies and never save fresh ones;
+          # the cost: any root Cargo.toml edit starts both jobs from a cold cache
+          key: ${{ hashFiles('Cargo.toml') }}
       - name: Lint Test
         # read-only checks, so they run first and fail fast; unlike the TypeScript
         # template nothing here rewrites files that could widen a later step's scope
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - name: Unit Test
-        # inline #[cfg(test)] modules in each crate's src, plus doctests
-        run: |
-          cargo test --workspace --locked --lib --bins
-          cargo test --workspace --locked --doc
-      - name: Integration Test
-        # crate-level tests/: adapter fixtures, engine behaviour, eval harness, CLI e2e
-        run: cargo test --workspace --locked --test '*'
+      - name: Doc Test
+        # doctests only: the Coverage job runs every unit, integration and e2e
+        # test once and fails on any failing test, so they don't run twice
+        run: cargo test --workspace --locked --doc
   coverage:
     name: Coverage
     # runs beside Verify; same draft-PR skip and runner choice
@@ -62,13 +63,23 @@ jobs:
           rustup component add llvm-tools-preview
       - name: Setup Build Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # rust-cache never hashes the root workspace manifest, so a [profile]
+          # change would restore stale dependencies and never save fresh ones;
+          # the cost: any root Cargo.toml edit starts both jobs from a cold cache
+          key: ${{ hashFiles('Cargo.toml') }}
       - name: Setup cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Setup cargo-nextest
+        uses: taiki-e/install-action@nextest
       - name: Coverage Test
-        # every production line, function and region must run; test code and lines
+        # the workspace's only test run: unit, integration and e2e tests, run by
+        # nextest across every test binary at once; any failing test fails the job,
+        # and --no-fail-fast reports every failure in one run.
+        # Every production line, function and region must run; test code and lines
         # waived with `// coverage: unreachable, <reason>` are left out (see the script)
         run: |
-          cargo llvm-cov --workspace --locked --no-report
+          cargo llvm-cov nextest --workspace --locked --no-report --no-fail-fast
           cargo llvm-cov report --json --output-path coverage.json
           cargo llvm-cov report --lcov --output-path coverage.lcov
           python3 scripts/coverage-gate.py coverage.json coverage.lcov .

@@ -193,7 +193,7 @@ fn analyze_to_file(name: &str) -> PathBuf {
 fn analyze_to_file_with(name: &str, extra: &[&str]) -> PathBuf {
     let root = fixture(name);
     let root_str = root.to_str().unwrap_or_default();
-    let path = std::env::temp_dir().join(format!("unlace-e2e-{name}-{}.json", nanos()));
+    let path = std::env::temp_dir().join(format!("unlace-e2e-{name}-{}.json", stamp()));
     let path_str = path.to_str().unwrap_or_default();
 
     let mut args = vec![
@@ -1670,10 +1670,12 @@ fn should_reject_a_malformed_fail_on_selector_without_gating() {
     assert_eq!(code, 1, "a malformed --fail-on is a usage error");
 }
 
-/// Returns a unique nanosecond stamp for temp paths.
-fn nanos() -> u128 {
-    std::time::SystemTime::now()
+/// Returns a temp-path stamp: the process id, because nextest runs each test
+/// in its own process, then the time.
+fn stamp() -> String {
+    let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    format!("{}-{nanos}", std::process::id())
 }

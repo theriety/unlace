@@ -69,7 +69,7 @@ mod tests {
 
     /// Builds a temp dir holding `files` (path, contents) pairs and returns it.
     fn fixture(files: &[(&str, &str)]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("unlace-analyze-{}", unique()));
+        let dir = std::env::temp_dir().join(format!("unlace-analyze-{}", stamp()));
         for (path, contents) in files {
             let full = dir.join(path);
             if let Some(parent) = full.parent() {
@@ -80,12 +80,14 @@ mod tests {
         dir
     }
 
-    /// Returns a process-unique suffix for temp paths.
-    fn unique() -> u128 {
-        std::time::SystemTime::now()
+    /// Returns a temp-path stamp: the process id, because nextest runs each test
+    /// in its own process, then the time.
+    fn stamp() -> String {
+        let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        format!("{}-{nanos}", std::process::id())
     }
 
     #[test]

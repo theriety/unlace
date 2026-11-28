@@ -121,7 +121,7 @@ fn run_in(dir: &Path, args: &[&str]) -> Run {
 fn analyze_to_file(name: &str) -> PathBuf {
     let root = fixture(name);
     let root_str = root.to_str().unwrap_or_default();
-    let path = std::env::temp_dir().join(format!("unlace-accept-{name}-{}.json", nanos()));
+    let path = std::env::temp_dir().join(format!("unlace-accept-{name}-{}.json", stamp()));
     let path_str = path.to_str().unwrap_or_default();
 
     let outcome = run(&[
@@ -146,12 +146,14 @@ fn analyze_to_file(name: &str) -> PathBuf {
     path
 }
 
-/// Returns a process-unique nanosecond stamp for temp paths.
-fn nanos() -> u128 {
-    std::time::SystemTime::now()
+/// Returns a temp-path stamp: the process id, because nextest runs each test
+/// in its own process, then the time.
+fn stamp() -> String {
+    let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    format!("{}-{nanos}", std::process::id())
 }
 
 /// The one advice disclaimer every human-readable output carries.
@@ -1516,7 +1518,7 @@ fn should_write_a_report_to_a_file_matching_its_stdout_form() {
     // never silently reshapes it.
     let result = analyze_to_file("rust");
     let result_str = result.to_str().unwrap_or_default();
-    let report_path = std::env::temp_dir().join(format!("unlace-accept-report-{}.md", nanos()));
+    let report_path = std::env::temp_dir().join(format!("unlace-accept-report-{}.md", stamp()));
     let report_str = report_path.to_str().unwrap_or_default();
 
     let to_file = run(&["report", "--input", result_str, "--output", report_str]);
@@ -1684,7 +1686,7 @@ fn should_error_on_an_empty_repository_with_a_stable_code() {
     // the current, intentional behavior — an empty repo is a hard, coded error rather
     // than an empty success summary. Built at runtime because git cannot commit an
     // empty directory.
-    let empty = std::env::temp_dir().join(format!("unlace-accept-empty-{}", nanos()));
+    let empty = std::env::temp_dir().join(format!("unlace-accept-empty-{}", stamp()));
     let created = std::fs::create_dir_all(&empty).is_ok();
     let empty_str = empty.to_str().unwrap_or_default();
 
@@ -1744,7 +1746,7 @@ fn should_error_on_an_invalid_config_with_a_stable_code() {
     // and the run exits 1 with the stable `error[CONFIG_INVALID]` code — never the
     // gating 2, and never a silent fallback to defaults (a present-but-invalid file is
     // an error, unlike an absent one).
-    let bad = std::env::temp_dir().join(format!("unlace-accept-badconfig-{}.toml", nanos()));
+    let bad = std::env::temp_dir().join(format!("unlace-accept-badconfig-{}.toml", stamp()));
     let written = std::fs::write(&bad, b"this is = not valid = toml ][\n").is_ok();
     let bad_str = bad.to_str().unwrap_or_default();
     let root = fixture("rust");
@@ -1973,7 +1975,7 @@ fn should_reject_malformed_and_absent_mode_candidate_refs() {
     let root = fixture("rust");
     let root_str = root.to_str().unwrap_or_default();
     let anchored_only =
-        std::env::temp_dir().join(format!("unlace-accept-anchored-{}.json", nanos()));
+        std::env::temp_dir().join(format!("unlace-accept-anchored-{}.json", stamp()));
     let anchored_only_str = anchored_only.to_str().unwrap_or_default();
     let saved = run(&[
         "analyze",
@@ -2015,7 +2017,7 @@ fn should_reject_malformed_and_absent_mode_candidate_refs() {
 #[test]
 fn should_exit_one_on_a_malformed_result_input_for_every_reader() {
     // all three result readers reject non-JSON input with the same coded error.
-    let bad = std::env::temp_dir().join(format!("unlace-accept-badinput-{}.json", nanos()));
+    let bad = std::env::temp_dir().join(format!("unlace-accept-badinput-{}.json", stamp()));
     let bad_str = bad.to_str().unwrap_or_default();
     let written = std::fs::write(&bad, b"not json {{{").is_ok();
 
@@ -2106,7 +2108,7 @@ fn should_write_analyze_json_to_a_file_byte_identical_to_stdout() {
     // have carried (trailing newline included) and stdout stays empty.
     let root = fixture("python");
     let root_str = root.to_str().unwrap_or_default();
-    let path = std::env::temp_dir().join(format!("unlace-accept-output-{}.json", nanos()));
+    let path = std::env::temp_dir().join(format!("unlace-accept-output-{}.json", stamp()));
     let path_str = path.to_str().unwrap_or_default();
 
     let to_stdout = run(&[
@@ -2169,7 +2171,7 @@ fn should_default_to_summary_when_stdout_is_piped() {
 fn should_default_to_summary_when_stdout_is_redirected() -> Result<(), Box<dyn std::error::Error>> {
     let root = fixture("python");
     let root_str = root.to_str().ok_or("non-UTF8 root")?;
-    let path = std::env::temp_dir().join(format!("unlace-summary-redirect-{}.txt", nanos()));
+    let path = std::env::temp_dir().join(format!("unlace-summary-redirect-{}.txt", stamp()));
     let output = std::fs::File::create(&path)?;
     let outcome = std::process::Command::new(assert_cmd::cargo::cargo_bin("unlace"))
         .args(["analyze", "--root", root_str, "--config", PURE_DEFAULTS])
@@ -2267,7 +2269,7 @@ fn should_honor_config_precedence_flags_over_toml_over_defaults() {
     // over that same toml brings it back — flag > toml > default.
     let root = fixture("python");
     let root_str = root.to_str().unwrap_or_default();
-    let toml = std::env::temp_dir().join(format!("unlace-accept-precedence-{}.toml", nanos()));
+    let toml = std::env::temp_dir().join(format!("unlace-accept-precedence-{}.toml", stamp()));
     let toml_str = toml.to_str().unwrap_or_default();
     let written = std::fs::write(
         &toml,
@@ -2323,7 +2325,7 @@ fn should_flip_a_borderline_finding_to_a_gating_violation_via_a_config_cap() {
     // gating violation once a toml lowers the cap to 150.
     let root = fixture("borderline-only");
     let root_str = root.to_str().unwrap_or_default();
-    let toml = std::env::temp_dir().join(format!("unlace-accept-lowcap-{}.toml", nanos()));
+    let toml = std::env::temp_dir().join(format!("unlace-accept-lowcap-{}.toml", stamp()));
     let toml_str = toml.to_str().unwrap_or_default();
     let written = std::fs::write(
         &toml,
@@ -2905,8 +2907,8 @@ fn should_honor_objective_and_weights_config_keys() {
             .unwrap_or(f64::NAN)
     };
     let objective_toml =
-        std::env::temp_dir().join(format!("unlace-accept-objective-{}.toml", nanos()));
-    let weights_toml = std::env::temp_dir().join(format!("unlace-accept-weights-{}.toml", nanos()));
+        std::env::temp_dir().join(format!("unlace-accept-objective-{}.toml", stamp()));
+    let weights_toml = std::env::temp_dir().join(format!("unlace-accept-weights-{}.toml", stamp()));
     let objective_written = std::fs::write(
         &objective_toml,
         b"[profiles.anchored.objective]\nimbalance = 0.0\n",
@@ -2942,7 +2944,7 @@ fn should_reject_a_zero_seeds_per_candidate_from_config() {
     // multiplier is refused up front with the coded error naming the key.
     let root = fixture("python");
     let root_str = root.to_str().unwrap_or_default();
-    let toml = std::env::temp_dir().join(format!("unlace-accept-seeds-{}.toml", nanos()));
+    let toml = std::env::temp_dir().join(format!("unlace-accept-seeds-{}.toml", stamp()));
     let toml_str = toml.to_str().unwrap_or_default();
     let written = std::fs::write(
         &toml,
@@ -3201,8 +3203,8 @@ fn should_resolve_a_relative_root_to_real_names_and_full_rust_edges() {
     let canonical = std::fs::canonicalize(fixture("workspace-rust"))
         .unwrap_or_else(|_| fixture("workspace-rust"));
     let canonical_str = canonical.to_str().unwrap_or_default();
-    let dot_result = std::env::temp_dir().join(format!("unlace-accept-dotroot-{}.json", nanos()));
-    let abs_result = std::env::temp_dir().join(format!("unlace-accept-absroot-{}.json", nanos()));
+    let dot_result = std::env::temp_dir().join(format!("unlace-accept-dotroot-{}.json", stamp()));
+    let abs_result = std::env::temp_dir().join(format!("unlace-accept-absroot-{}.json", stamp()));
     let dot_str = dot_result.to_str().unwrap_or_default();
     let abs_str = abs_result.to_str().unwrap_or_default();
 
@@ -3257,7 +3259,7 @@ fn should_reject_a_missing_analysis_root_with_input_unreadable() {
     // fs::canonicalize makes analyze the guard for "does --root exist?": a
     // nonexistent root is a clean exit-1 INPUT_UNREADABLE, never the gating 2 and
     // never a silently degraded snapshot.
-    let missing = std::env::temp_dir().join(format!("unlace-absent-{}", nanos()));
+    let missing = std::env::temp_dir().join(format!("unlace-absent-{}", stamp()));
     let missing_str = missing.to_str().unwrap_or_default();
 
     let outcome = run(&[
