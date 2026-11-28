@@ -53,6 +53,12 @@ jobs:
     # runs beside Verify; same draft-PR skip and runner choice
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ${{ vars.ACTION_INSTANCE_GROUP_SMALL || 'ubuntu-latest' }}
+    env:
+      # line tables keep file:line in a failing test's backtrace, and coverage
+      # reads its own mapping sections, not debug info. Full debug info made each
+      # test binary that links rust-analyzer about 830 MB and most of the build
+      # time; with line tables they are about 305 MB
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - name: Code Checkout
         uses: actions/checkout@v7

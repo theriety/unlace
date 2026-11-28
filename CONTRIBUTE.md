@@ -163,7 +163,7 @@ The `bacon` jobs mirror these gates exactly — `clippy` (the default job), `che
 
 ## Coverage gate
 
-CI's `Coverage` job requires **100% of production lines, functions and regions** to run under the test suite. It is also CI's only run of the unit, integration and e2e tests, so a failing test fails it; `Verify` runs formatting, clippy and doctests. Measure locally with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) (`cargo install cargo-llvm-cov`, plus `rustup component add llvm-tools-preview`). CI runs the tests through nextest; without nextest, run `cargo llvm-cov --workspace --locked --no-report` instead of the first line:
+CI's `Coverage` job requires **100% of production lines, functions and regions** to run under the test suite. It is also CI's only run of the unit, integration and e2e tests, so a failing test fails it; `Verify` runs formatting, clippy and doctests. Measure locally with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) (`cargo install cargo-llvm-cov`, plus `rustup component add llvm-tools-preview`). CI runs the tests through nextest, with `CARGO_PROFILE_DEV_DEBUG=line-tables-only` to keep the instrumented build small and fast; the setting doesn't change the coverage numbers, and you can set it locally too. Without nextest, run `cargo llvm-cov --workspace --locked --no-report` instead of the first line:
 
 ```sh
 cargo llvm-cov nextest --workspace --locked --no-report
