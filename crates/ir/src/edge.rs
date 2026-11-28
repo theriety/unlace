@@ -42,4 +42,14 @@ pub struct Edge {
     /// `1.0` = statically certain; below `1.0` for dynamic constructs
     /// (dynamic import, getattr, macro-expanded references).
     pub confidence: f64,
+    /// Marks an edge that stands for loading a module's whole surface without
+    /// naming the symbol used: one such edge goes to every export the load
+    /// could reach (TypeScript `import('...')`, Python
+    /// `importlib.import_module` and star imports).
+    ///
+    /// It is evidence that the target's module is loaded, not that the target
+    /// belongs beside the source. Omitted from the serialized form when
+    /// `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fan_out: bool,
 }

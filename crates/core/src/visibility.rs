@@ -351,6 +351,7 @@ mod tests {
             kind,
             hardness: Hardness::Soft,
             confidence: 1.0,
+            fan_out: false,
         }
     }
 

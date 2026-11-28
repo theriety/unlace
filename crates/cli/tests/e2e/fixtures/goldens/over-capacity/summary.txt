@@ -1,6 +1,6 @@
 Unlace report — over-capacity
 3 files · 375 symbols · 0 edges
-Snapshot `3f214d4ce8d116f9db703133f34f3be610b97a013f46bd10049050eb5bbdeaa6`
+Snapshot `f82e8a0bf22b6064747c65e032540cc596c011da70bebd01bdc61bbced4370fe`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 Structural findings

@@ -1,12 +1,12 @@
 //! Fragment merging: re-interns per-adapter ids into one namespace and rebuilds
 //! the container tree from file paths.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use smol_str::SmolStr;
 use unlace_ir::{
-    ContainerId, IntermediateRepresentation, IrFragment, Layout, Node, NodeId, ScopeLevel,
-    build_laminar_tree,
+    ContainerId, FileImport, IntermediateRepresentation, IrFragment, Layout, Node, NodeId,
+    ScopeLevel, build_laminar_tree,
 };
 
 use super::visibility::apply_visibility_scopes;
@@ -20,6 +20,13 @@ use super::visibility::apply_visibility_scopes;
 /// Each fragment's own file-level containers name the repo-relative path of the
 /// file every node lives in; those paths seed [`build_laminar_tree`], and each
 /// node is reattached to its file's container in the rebuilt tree.
+///
+/// Import facts are concatenated as stated. A fragment whose adapter states
+/// its imports adds every file it carries to the import coverage, so the
+/// snapshot can tell a file that imports nothing from one whose imports are
+/// unknown. A file the fragment lists in `files_without_imports` stays out of
+/// the coverage, and its stated imports are dropped with it. A fragment whose
+/// language has no load order marks every file it carries as unordered.
 pub(super) fn merge_fragments(
     fragments: Vec<IrFragment>,
     root_name: &str,
@@ -33,12 +40,15 @@ pub(super) fn merge_fragments(
     let mut advisory_uses = Vec::new();
     let mut file_facts = Vec::new();
     let mut test_support_roots = Vec::new();
+    let mut imports = Vec::new();
+    let mut import_coverage = Vec::new();
+    let mut unordered_files = Vec::new();
     // the file path each merged node belongs to, parallel to `nodes`.
     let mut node_paths: Vec<SmolStr> = Vec::new();
     let mut all_paths: Vec<SmolStr> = Vec::new();
 
     let mut node_offset = 0_u32;
-    for fragment in fragments {
+    for mut fragment in fragments {
         // file-level containers are keyed by full repo-relative path; map each
         // fragment-local container id to that path so nodes can be re-homed.
         let file_path: HashMap<u32, SmolStr> = fragment
@@ -48,6 +58,10 @@ pub(super) fn merge_fragments(
             .map(|container| (container.id.0, container.name.clone()))
             .collect();
         all_paths.extend(file_path.values().cloned());
+        let facts = take_import_facts(&mut fragment);
+        imports.extend(facts.imports);
+        import_coverage.extend(facts.coverage);
+        unordered_files.extend(facts.unordered);
 
         // each fragment's ids span 0..=max; advancing the base by one past its
         // own maximum guarantees the next fragment's re-interned ids never
@@ -112,7 +126,61 @@ pub(super) fn merge_fragments(
     ir.advisory_uses = advisory_uses;
     ir.file_facts = file_facts;
     ir.test_support_roots = test_support_roots;
+    ir.imports = imports;
+    ir.import_coverage = import_coverage;
+    ir.unordered_files = unordered_files;
     ir
+}
+
+/// One fragment's import facts as the merge keeps them.
+struct ImportFacts {
+    /// The stated imports whose importer is covered.
+    imports: Vec<FileImport>,
+    /// The files whose imports are stated.
+    coverage: Vec<SmolStr>,
+    /// The files whose language has no load order.
+    unordered: Vec<SmolStr>,
+}
+
+/// Takes `fragment`'s imports and reads its coverage. An adapter that does not
+/// state its imports has no coverage, so any imports it sent would sit outside
+/// it and are dropped; a file it lists as a gap leaves the coverage with every
+/// import it holds, so every kept import stays inside the coverage.
+fn take_import_facts(fragment: &mut IrFragment) -> ImportFacts {
+    // read the container list, not a map, so the order is stable.
+    let files: Vec<SmolStr> = fragment
+        .containers
+        .iter()
+        .filter(|container| container.level == ScopeLevel::File)
+        .map(|container| container.name.clone())
+        .collect();
+    let stated = std::mem::take(&mut fragment.imports);
+    let gaps: HashSet<&SmolStr> = fragment.files_without_imports.iter().collect();
+    let (imports, coverage) = if fragment.states_imports {
+        (
+            stated
+                .into_iter()
+                .filter(|import| !gaps.contains(&import.importer))
+                .collect(),
+            files
+                .iter()
+                .filter(|file| !gaps.contains(file))
+                .cloned()
+                .collect(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let unordered = if fragment.unordered_imports {
+        files
+    } else {
+        Vec::new()
+    };
+    ImportFacts {
+        imports,
+        coverage,
+        unordered,
+    }
 }
 
 /// Returns one past the maximum id in `ids`, i.e. the id range width a fragment

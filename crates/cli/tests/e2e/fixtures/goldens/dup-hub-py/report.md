@@ -1,7 +1,7 @@
 # Unlace report — dup-hub-py
 
 24 files · 24 symbols · 22 edges
-Snapshot `1f82d771a347b6b62dfaf2742751fc8488b954c5bc57120429753627d3158329`
+Snapshot `95ef1cc3176f292911a03f0d59bd41e0615e5452fcbd5d82637080bca4858fe0`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 ## Structural findings

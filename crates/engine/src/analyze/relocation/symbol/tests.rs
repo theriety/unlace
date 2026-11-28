@@ -2252,6 +2252,7 @@ fn should_count_every_structural_dependency_without_charging_a_whole_file_move()
                     kind,
                     hardness: Hardness::Hard,
                     confidence: 1.0,
+                    fan_out: false,
                 },
                 Edge {
                     source: NodeId(0),
@@ -2259,6 +2260,7 @@ fn should_count_every_structural_dependency_without_charging_a_whole_file_move()
                     kind,
                     hardness: Hardness::Hard,
                     confidence: 1.0,
+                    fan_out: false,
                 },
             ],
             vec![

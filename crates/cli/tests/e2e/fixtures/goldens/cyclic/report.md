@@ -1,7 +1,7 @@
 # Unlace report — cyclic
 
 2 files · 2 symbols · 2 edges
-Snapshot `6ff9df04b67c1fc8e6980d4bc33357256c6ccfebf496d43e0abe13912dfe6375`
+Snapshot `a6cb56992b9ee3531f14e74767a80df0c7838a99415848781b4102e3700fbc88`
 All findings and moves are suggestions. Applying them may break the build; use your own judgement.
 
 ## Structural findings
