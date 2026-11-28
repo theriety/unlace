@@ -65,12 +65,10 @@ paths = [
   "src/tree/validation/content.ts",
 ]
 because = "tree/validation/ is the companion folder of tree/validation.ts; shape.ts is used only by its owner and a sibling and depends only on a sibling, so it stays with them (F1)"
-expect_fail = "F1: shape.ts leaves tree/validation/ for tree/ in both modes"
 
 [[assert.preserve_dir]]
 path = "tree/validation"
 because = "tree/validation/ is the companion folder of tree/validation.ts and survives whole: no member leaves it and the folder neither moves nor dissolves (F1)"
-expect_fail = "F1: no node holds tree/validation/ whole in either mode; shape.ts is hoisted into tree/"
 
 # F2. mdcx-body.ts has one importer, its sibling mdcx.ts; the pull toward
 # lexer/types.ts is a type-only import every block/* sibling shares.
@@ -102,7 +100,6 @@ expect_fail = "F4: readMdcxBlock moves to src/lexer/block.ts in greenfield"
 symbol = "buildAnnotation"
 path = "src/parser/inline/annotation.ts"
 because = "one of annotation.ts's three exports, each calling that file's private helpers; moving it into the companion owner inline.ts splits the file's implementation (F5)"
-expect_fail = "F5: buildAnnotation moves to src/parser/inline.ts in both modes"
 
 [[assert.preserve_symbol_home]]
 symbol = "readInlineSelector"
@@ -144,13 +141,11 @@ expect_fail = "F9: appendToken moves to src/syntax/inline/brackets.ts in greenfi
 
 [[assert.recommended_guard]]
 because = "SC-5: every keep_together and preserve_symbol_home pin above encodes a move SC-1-SC-3 falsify, so no Recommended move may break one, whether or not a pin below names it"
-expect_fail = "F1: the Recommended shape.ts -> src/tree move splits keep_together and preserve_dir tree/validation"
 
 [[assert.advice_tier]]
 path = "src/tree/validation/shape.ts"
 max_tier = "absent"
 because = "F1, the one move 1.0.0 recommended (both profiles qualified it, into tree/): moving shape.ts anywhere out of its companion folder tree/validation/ tears it from the owner and sibling that import it and the sibling it imports (SC-1)"
-expect_fail = "F1: shape.ts -> src/tree is Recommended"
 
 [[assert.advice_tier]]
 path = "src/lexer/block/mdcx-body.ts"
@@ -177,7 +172,6 @@ symbol = "buildAnnotation"
 path = "src/parser/inline/annotation.ts"
 max_tier = "absent"
 because = "F5: one of annotation.ts's three exports, each calling the file's private helpers; moving it anywhere splits the file's implementation (SC-2)"
-expect_fail = "F5: the buildAnnotation move is a Review candidate"
 
 [[assert.advice_tier]]
 symbol = "readInlineSelector"

@@ -72,6 +72,9 @@ pub(in crate::analyze) struct FileInfo {
     pub(in crate::analyze) home: LaminarHome,
     /// Opaque path prefix removed by the laminar render normalization.
     pub(in crate::analyze) namespace: SmolStr,
+    /// The directory the file counts in (ADR-31): its companion folder when
+    /// it is a folder's entry, otherwise its physical parent directory.
+    pub(in crate::analyze) directory: SmolStr,
 }
 
 /// Derives the opaque path prefix removed from a file's rendered laminar home.

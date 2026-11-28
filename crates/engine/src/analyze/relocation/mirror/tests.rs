@@ -1013,6 +1013,7 @@ fn bare_file(container: u32, path: &str) -> FileInfo {
             synthetic: false,
             label_keyed: false,
         },
+        directory: SmolStr::new(path.rsplit_once('/').map_or("", |(directory, _)| directory)),
     }
 }
 

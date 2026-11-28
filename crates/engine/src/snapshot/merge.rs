@@ -4,9 +4,10 @@
 use std::collections::{HashMap, HashSet};
 
 use smol_str::SmolStr;
+use unlace_ir::laminar::{Companions, build_laminar_tree_with_companions};
 use unlace_ir::{
     ContainerId, FileImport, IntermediateRepresentation, IrFragment, Layout, Node, NodeId,
-    ScopeLevel, build_laminar_tree,
+    ScopeLevel,
 };
 
 use super::visibility::apply_visibility_scopes;
@@ -19,7 +20,9 @@ use super::visibility::apply_visibility_scopes;
 ///
 /// Each fragment's own file-level containers name the repo-relative path of the
 /// file every node lives in; those paths seed [`build_laminar_tree`], and each
-/// node is reattached to its file's container in the rebuilt tree.
+/// node is reattached to its file's container in the rebuilt tree. A file an
+/// adapter states as a folder companion hangs under its folder's container, as
+/// that folder's entry (ADR-31).
 ///
 /// Import facts are concatenated as stated. A fragment whose adapter states
 /// its imports adds every file it carries to the import coverage, so the
@@ -106,7 +109,8 @@ pub(super) fn merge_fragments(
         node_offset += node_span;
     }
 
-    let built = build_laminar_tree(&all_paths, root_name, layout);
+    let companions = Companions::from_facts(&file_facts);
+    let built = build_laminar_tree_with_companions(&all_paths, root_name, layout, &companions);
     for (node, path) in nodes.iter_mut().zip(&node_paths) {
         node.container = built.files.get(path).copied().unwrap_or(ContainerId(0));
     }
