@@ -1,0 +1,4 @@
+# Test binaries analyse Rust fixtures against a small standard library; see
+# test-support/run-test.sh and "Tests use a small standard library" in CONTRIBUTE.md.
+[target.'cfg(unix)']
+runner = "test-support/run-test.sh"
